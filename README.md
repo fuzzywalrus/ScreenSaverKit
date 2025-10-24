@@ -18,6 +18,8 @@ Treat it as a starting point that you can copy into any new screensaver project.
 Keeping these concerns in one place lets each screensaver focus on drawing
 and behaviour instead of boilerplate.
 
+![Starfield Preferences](documentation-src/starfield.gif)
+
 ## Getting Started
 
 **New to ScreenSaverKit?** Check out the **[complete tutorial](tutorial.md)** for a step-by-step walkthrough that covers building your first screen saver, understanding the code, debugging, and creating your own custom savers.
