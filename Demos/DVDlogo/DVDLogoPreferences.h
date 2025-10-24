@@ -10,6 +10,7 @@ FOUNDATION_EXPORT NSString * const DVDLogoPreferenceKeyPalette;
 FOUNDATION_EXPORT NSString * const DVDLogoPreferenceKeySolidColor;
 FOUNDATION_EXPORT NSString * const DVDLogoPreferenceKeyRandomStartPosition;
 FOUNDATION_EXPORT NSString * const DVDLogoPreferenceKeyRandomStartVelocity;
+FOUNDATION_EXPORT NSString * const DVDLogoPreferenceKeyBounceParticles;
 
 FOUNDATION_EXPORT NSString * const DVDLogoColorModeSolid;
 FOUNDATION_EXPORT NSString * const DVDLogoColorModePalette;

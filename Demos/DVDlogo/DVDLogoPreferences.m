@@ -8,6 +8,7 @@ NSString * const DVDLogoPreferenceKeyPalette = @"dvdLogoPalette";
 NSString * const DVDLogoPreferenceKeySolidColor = @"dvdLogoSolidColor";
 NSString * const DVDLogoPreferenceKeyRandomStartPosition = @"dvdLogoRandomStartPosition";
 NSString * const DVDLogoPreferenceKeyRandomStartVelocity = @"dvdLogoRandomStartVelocity";
+NSString * const DVDLogoPreferenceKeyBounceParticles = @"dvdLogoBounceParticles";
 
 NSString * const DVDLogoColorModeSolid = @"solid";
 NSString * const DVDLogoColorModePalette = @"palette";

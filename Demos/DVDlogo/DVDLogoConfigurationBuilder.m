@@ -1,13 +1,15 @@
 #import "DVDLogoConfigurationBuilder.h"
 
-#import "DVDLogoPaletteUtilities.h"
+#import "DVDLogoPalettes.h"
 #import "DVDLogoPreferences.h"
+#import "ScreenSaverKit/SSKPaletteManager.h"
 #import "ScreenSaverKit/SSKPreferenceBinder.h"
 
 @implementation DVDLogoConfigurationBuilder
 
 + (void)populateStack:(NSStackView *)stack withBinder:(SSKPreferenceBinder *)binder {
     if (!stack || !binder) { return; }
+    DVDRegisterRetroPalettes();
 
     [stack addArrangedSubview:[self sliderRowWithTitle:@"Speed"
                                              minValue:0.2
@@ -42,6 +44,10 @@
     NSButton *randomVelocityToggle = [NSButton checkboxWithTitle:@"Randomize start direction" target:nil action:nil];
     [binder bindCheckbox:randomVelocityToggle key:DVDLogoPreferenceKeyRandomStartVelocity];
     [stack addArrangedSubview:randomVelocityToggle];
+
+    NSButton *bloomToggle = [NSButton checkboxWithTitle:@"Enable bounce glow" target:nil action:nil];
+    [binder bindCheckbox:bloomToggle key:DVDLogoPreferenceKeyBounceParticles];
+    [stack addArrangedSubview:bloomToggle];
 }
 
 #pragma mark - Helpers
@@ -106,11 +112,17 @@
     NSPopUpButton *popUp = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
     [popUp removeAllItems];
 
-    for (NSDictionary<NSString *, id> *palette in DVDLogoPaletteDefinitions()) {
-        NSString *title = palette[@"title"] ?: @"Palette";
+    NSArray<SSKColorPalette *> *palettes = [[SSKPaletteManager sharedManager] palettesForModule:DVDPaletteModuleIdentifier()];
+    for (SSKColorPalette *palette in palettes) {
+        NSString *title = palette.displayName.length ? palette.displayName : @"Palette";
         [popUp addItemWithTitle:title];
         NSMenuItem *item = [popUp itemAtIndex:popUp.numberOfItems - 1];
-        item.representedObject = palette[@"value"];
+        item.representedObject = palette.identifier;
+    }
+    if (popUp.numberOfItems == 0) {
+        NSString *fallback = DVDDefaultPaletteIdentifier();
+        [popUp addItemWithTitle:fallback];
+        popUp.lastItem.representedObject = fallback;
     }
 
     NSStackView *row = [[NSStackView alloc] initWithFrame:NSZeroRect];

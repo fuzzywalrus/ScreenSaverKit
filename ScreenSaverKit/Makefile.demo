@@ -30,7 +30,11 @@ SOURCES := \
 	SSKScreenUtilities.m \
 	SSKDiagnostics.m \
 	SSKPreferenceBinder.m \
-	SSKConfigurationWindowController.m
+	SSKConfigurationWindowController.m \
+	SSKColorPalette.m \
+	SSKPaletteManager.m \
+	SSKColorUtilities.m \
+	SSKParticleSystem.m
 
 INFO_PLIST ?= $(KIT_DIR)/TemplateInfo.plist
 EXECUTABLE := $(MACOS_DIR)/$(SCREENSAVER_NAME)

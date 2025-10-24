@@ -26,7 +26,7 @@ FRAMEWORKS := -framework Cocoa -framework ScreenSaver -framework QuartzCore
 SOURCES := \
 	$(CURRENT_DIR)/DVDLogoView.m \
 	$(CURRENT_DIR)/DVDLogoPreferences.m \
-	$(CURRENT_DIR)/DVDLogoPaletteUtilities.m \
+	$(CURRENT_DIR)/DVDLogoPalettes.m \
 	$(CURRENT_DIR)/DVDLogoConfigurationBuilder.m \
 	$(KIT_SOURCE_DIR)/SSKScreenSaverView.m \
 	$(KIT_SOURCE_DIR)/SSKAssetManager.m \
@@ -35,7 +35,11 @@ SOURCES := \
 	$(KIT_SOURCE_DIR)/SSKScreenUtilities.m \
 	$(KIT_SOURCE_DIR)/SSKDiagnostics.m \
 	$(KIT_SOURCE_DIR)/SSKPreferenceBinder.m \
-	$(KIT_SOURCE_DIR)/SSKConfigurationWindowController.m
+	$(KIT_SOURCE_DIR)/SSKConfigurationWindowController.m \
+	$(KIT_SOURCE_DIR)/SSKColorPalette.m \
+	$(KIT_SOURCE_DIR)/SSKPaletteManager.m \
+	$(KIT_SOURCE_DIR)/SSKColorUtilities.m \
+	$(KIT_SOURCE_DIR)/SSKParticleSystem.m
 
 INFO_PLIST := $(CURRENT_DIR)/Info.plist
 EXECUTABLE := $(MACOS_DIR)/$(SCREENSAVER_NAME)

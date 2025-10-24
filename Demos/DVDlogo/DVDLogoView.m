@@ -4,12 +4,16 @@
 #import <AppKit/NSImageRep.h>
 #import <objc/message.h>
 
+#import "ScreenSaverKit/SSKColorUtilities.h"
 #import "ScreenSaverKit/SSKConfigurationWindowController.h"
 #import "ScreenSaverKit/SSKDiagnostics.h"
+#import "ScreenSaverKit/SSKPaletteManager.h"
 #import "ScreenSaverKit/SSKPreferenceBinder.h"
+#import "ScreenSaverKit/SSKParticleSystem.h"
+#import "ScreenSaverKit/SSKVectorMath.h"
 
 #import "DVDLogoConfigurationBuilder.h"
-#import "DVDLogoPaletteUtilities.h"
+#import "DVDLogoPalettes.h"
 #import "DVDLogoPreferences.h"
 
 typedef NS_ENUM(NSUInteger, DVDBrandColorMode) {
@@ -32,37 +36,58 @@ typedef NS_ENUM(NSUInteger, DVDBrandColorMode) {
 @property (nonatomic, strong) SSKConfigurationWindowController *configController;
 @property (nonatomic) BOOL randomStartPositionEnabled;
 @property (nonatomic) BOOL randomStartVelocityEnabled;
+@property (nonatomic, strong) SSKParticleSystem *particleSystem;
+@property (nonatomic) BOOL bounceParticlesEnabled;
 @end
 
 @implementation DVDLogoView
 
+- (NSString *)paletteModuleIdentifier {
+    NSString *module = DVDPaletteModuleIdentifier();
+    return module.length ? module : @"RetroDVDLogo";
+}
+
+- (NSColor *)fallbackSolidColor {
+    return [NSColor colorWithHue:0.6 saturation:0.6 brightness:1.0 alpha:1.0];
+}
+
 - (NSDictionary<NSString *,id> *)defaultPreferences {
+    DVDRegisterRetroPalettes();
+    NSString *defaultPalette = DVDDefaultPaletteIdentifier() ?: @"neon";
     return @{
         DVDLogoPreferenceKeySpeed: @(1.0),
         DVDLogoPreferenceKeySize: @(0.35),
         DVDLogoPreferenceKeyColorMode: DVDLogoColorModePalette,
         DVDLogoPreferenceKeyColorRate: @(0.25),
-        DVDLogoPreferenceKeyPalette: DVDLogoPaletteFallbackIdentifier(),
-        DVDLogoPreferenceKeySolidColor: DVDLogoSerializeColor(DVDLogoFallbackSolidColor()),
+        DVDLogoPreferenceKeyPalette: defaultPalette,
+        DVDLogoPreferenceKeySolidColor: SSKSerializeColor([self fallbackSolidColor]),
         DVDLogoPreferenceKeyRandomStartPosition: @(YES),
-        DVDLogoPreferenceKeyRandomStartVelocity: @(YES)
+        DVDLogoPreferenceKeyRandomStartVelocity: @(YES),
+        DVDLogoPreferenceKeyBounceParticles: @(NO)
     };
 }
 
 - (instancetype)initWithFrame:(NSRect)frame isPreview:(BOOL)isPreview {
     if ((self = [super initWithFrame:frame isPreview:isPreview])) {
         self.animationTimeInterval = 1.0 / 60.0;
+        DVDRegisterRetroPalettes();
         NSDictionary *defaults = [self defaultPreferences];
         _speedMultiplier = MAX(0.2, [defaults[DVDLogoPreferenceKeySpeed] doubleValue]);
         _sizeMultiplier = MAX(0.1, [defaults[DVDLogoPreferenceKeySize] doubleValue]);
         _colorRate = MAX(0.0, [defaults[DVDLogoPreferenceKeyColorRate] doubleValue]);
         NSString *modeString = [defaults[DVDLogoPreferenceKeyColorMode] isKindOfClass:[NSString class]] ? defaults[DVDLogoPreferenceKeyColorMode] : DVDLogoColorModePalette;
         _colorMode = [modeString isEqualToString:DVDLogoColorModeSolid] ? DVDBrandColorModeSolid : DVDBrandColorModePalette;
-        NSString *paletteValue = [defaults[DVDLogoPreferenceKeyPalette] isKindOfClass:[NSString class]] ? defaults[DVDLogoPreferenceKeyPalette] : DVDLogoPaletteFallbackIdentifier();
-        _paletteIdentifier = paletteValue.length ? paletteValue : DVDLogoPaletteFallbackIdentifier();
-        _solidColor = DVDLogoColorFromPreferenceValue(defaults[DVDLogoPreferenceKeySolidColor], DVDLogoFallbackSolidColor());
+        NSString *paletteValue = [defaults[DVDLogoPreferenceKeyPalette] isKindOfClass:[NSString class]] ? defaults[DVDLogoPreferenceKeyPalette] : DVDDefaultPaletteIdentifier();
+        _paletteIdentifier = paletteValue.length ? paletteValue : DVDDefaultPaletteIdentifier();
+        _solidColor = SSKDeserializeColor(defaults[DVDLogoPreferenceKeySolidColor], [self fallbackSolidColor]);
         _randomStartPositionEnabled = [defaults[DVDLogoPreferenceKeyRandomStartPosition] boolValue];
         _randomStartVelocityEnabled = [defaults[DVDLogoPreferenceKeyRandomStartVelocity] boolValue];
+        _bounceParticlesEnabled = [defaults[DVDLogoPreferenceKeyBounceParticles] boolValue];
+        _particleSystem = [[SSKParticleSystem alloc] initWithCapacity:256];
+        _particleSystem.blendMode = SSKParticleBlendModeAdditive;
+        _particleSystem.updateHandler = ^(SSKParticle *particle, NSTimeInterval dt) {
+            particle.size += 20.0 * dt;
+        };
         [self loadLogoImage];
         [self resetInitialState];
         NSDictionary *prefs = [self currentPreferences];
@@ -105,6 +130,7 @@ typedef NS_ENUM(NSUInteger, DVDBrandColorMode) {
         (CGFloat)M_PI_4;
     self.velocity = NSMakePoint(cos(angle) * baseSpeed, sin(angle) * baseSpeed);
     self.colorPhase = 0.0;
+    [self.particleSystem reset];
 }
 
 - (void)loadLogoImage {
@@ -158,8 +184,8 @@ typedef NS_ENUM(NSUInteger, DVDBrandColorMode) {
     CGFloat halfWidth = (self.logoBaseSize.width * scale) * 0.5;
     CGFloat halfHeight = (self.logoBaseSize.height * scale) * 0.5;
 
-    position.x += velocity.x * self.speedMultiplier * dt;
-    position.y += velocity.y * self.speedMultiplier * dt;
+    NSPoint step = SSKVectorScale(velocity, self.speedMultiplier * dt);
+    position = SSKVectorAdd(position, step);
 
     NSRect bounds = NSInsetRect(self.bounds, halfWidth, halfHeight);
     if (bounds.size.width <= 0.0 || bounds.size.height <= 0.0) {
@@ -169,32 +195,35 @@ typedef NS_ENUM(NSUInteger, DVDBrandColorMode) {
     BOOL bounced = NO;
     if (position.x < NSMinX(bounds)) {
         position.x = NSMinX(bounds);
-        velocity.x = fabs(velocity.x);
+        velocity = SSKVectorReflect(velocity, NSMakePoint(1.0, 0.0));
         bounced = YES;
     } else if (position.x > NSMaxX(bounds)) {
         position.x = NSMaxX(bounds);
-        velocity.x = -fabs(velocity.x);
+        velocity = SSKVectorReflect(velocity, NSMakePoint(-1.0, 0.0));
         bounced = YES;
     }
 
     if (position.y < NSMinY(bounds)) {
         position.y = NSMinY(bounds);
-        velocity.y = fabs(velocity.y);
+        velocity = SSKVectorReflect(velocity, NSMakePoint(0.0, 1.0));
         bounced = YES;
     } else if (position.y > NSMaxY(bounds)) {
         position.y = NSMaxY(bounds);
-        velocity.y = -fabs(velocity.y);
+        velocity = SSKVectorReflect(velocity, NSMakePoint(0.0, -1.0));
         bounced = YES;
     }
 
     if (bounced) {
         self.colorPhase += 0.12;
         self.colorPhase -= floor(self.colorPhase);
+        [self emitBounceParticlesAtPosition:position];
     }
 
     self.position = position;
     self.velocity = velocity;
 
+    self.particleSystem.blendMode = (self.colorMode == DVDBrandColorModeSolid) ? SSKParticleBlendModeAlpha : SSKParticleBlendModeAdditive;
+    [self.particleSystem advanceBy:dt];
     [self setNeedsDisplay:YES];
 }
 
@@ -236,14 +265,35 @@ typedef NS_ENUM(NSUInteger, DVDBrandColorMode) {
         [image drawInRect:NSRectFromCGRect(drawRect)];
     }
 
+    [self.particleSystem drawInContext:ctx];
+
     [SSKDiagnostics drawOverlayInView:self
                                 text:@"DVD Logo Demo"
                      framesPerSecond:self.animationClock.framesPerSecond];
 }
 
+- (void)emitBounceParticlesAtPosition:(NSPoint)position {
+    if (!self.particleSystem || !self.bounceParticlesEnabled) { return; }
+    NSColor *baseColor = [self currentTintColor];
+    NSUInteger count = 36;
+    SSKParticleSystem *system = self.particleSystem;
+    [system spawnParticles:count initializer:^(SSKParticle *particle) {
+        particle.position = position;
+        particle.maxLife = 0.35 + ((CGFloat)arc4random() / UINT32_MAX) * 0.2;
+        CGFloat angle = ((CGFloat)arc4random() / UINT32_MAX) * (CGFloat)(M_PI * 2.0);
+        CGFloat speed = 90.0 + ((CGFloat)arc4random() / UINT32_MAX) * 140.0;
+        particle.velocity = NSMakePoint(cos(angle) * speed, sin(angle) * speed);
+        particle.size = 3.0 + ((CGFloat)arc4random() / UINT32_MAX) * 4.0;
+        particle.color = baseColor;
+        particle.damping = 0.45;
+        particle.rotationVelocity = (((CGFloat)arc4random() / UINT32_MAX) - 0.5f) * 3.0f;
+    }];
+}
+
 - (NSColor *)currentTintColor {
+    DVDRegisterRetroPalettes();
     if (self.colorMode == DVDBrandColorModeSolid) {
-        NSColor *base = [self.solidColor colorUsingColorSpace:[NSColorSpace sRGBColorSpace]] ?: DVDLogoFallbackSolidColor();
+        NSColor *base = [self.solidColor colorUsingColorSpace:[NSColorSpace sRGBColorSpace]] ?: [self fallbackSolidColor];
         if (self.colorRate <= 0.0) {
             return base;
         }
@@ -253,8 +303,19 @@ typedef NS_ENUM(NSUInteger, DVDBrandColorMode) {
         animatedHue = animatedHue - floor(animatedHue);
         return [NSColor colorWithHue:animatedHue saturation:sat brightness:bri alpha:alpha];
     } else {
-        NSArray<NSColor *> *colors = DVDLogoColorsForIdentifier(self.paletteIdentifier);
-        return DVDLogoColorForProgress(colors, self.colorPhase);
+        SSKPaletteManager *manager = [SSKPaletteManager sharedManager];
+        NSString *module = [self paletteModuleIdentifier];
+        SSKColorPalette *palette = [manager paletteWithIdentifier:self.paletteIdentifier module:module];
+        NSArray<SSKColorPalette *> *palettes = [manager palettesForModule:module];
+        if (!palette) {
+            palette = palettes.firstObject;
+        }
+        if (!palette) {
+            return [self fallbackSolidColor];
+        }
+        return [manager colorForPalette:palette
+                               progress:self.colorPhase
+                       interpolationMode:SSKPaletteInterpolationModeLoop];
     }
 }
 
@@ -265,6 +326,7 @@ typedef NS_ENUM(NSUInteger, DVDBrandColorMode) {
 
 - (void)applyPreferences:(NSDictionary<NSString *,id> *)preferences
              changedKeys:(nullable NSSet<NSString *> *)changedKeys {
+    DVDRegisterRetroPalettes();
     NSDictionary *defaults = [self defaultPreferences];
 
     double speed = [preferences[DVDLogoPreferenceKeySpeed] respondsToSelector:@selector(doubleValue)] ?
@@ -293,12 +355,17 @@ typedef NS_ENUM(NSUInteger, DVDBrandColorMode) {
     NSString *paletteValue = [preferences[DVDLogoPreferenceKeyPalette] isKindOfClass:[NSString class]] ?
         preferences[DVDLogoPreferenceKeyPalette] : defaults[DVDLogoPreferenceKeyPalette];
     if (![paletteValue isKindOfClass:[NSString class]] || paletteValue.length == 0) {
-        paletteValue = DVDLogoPaletteFallbackIdentifier();
+        paletteValue = DVDDefaultPaletteIdentifier();
+    }
+    SSKPaletteManager *paletteManager = [SSKPaletteManager sharedManager];
+    NSString *module = [self paletteModuleIdentifier];
+    if (![paletteManager paletteWithIdentifier:paletteValue module:module]) {
+        paletteValue = DVDDefaultPaletteIdentifier();
     }
     self.paletteIdentifier = paletteValue;
 
     id colorValue = preferences[DVDLogoPreferenceKeySolidColor] ?: defaults[DVDLogoPreferenceKeySolidColor];
-    self.solidColor = DVDLogoColorFromPreferenceValue(colorValue, DVDLogoFallbackSolidColor());
+    self.solidColor = SSKDeserializeColor(colorValue, [self fallbackSolidColor]);
 
     BOOL shouldReset = NO;
     BOOL newRandomPosition = [preferences[DVDLogoPreferenceKeyRandomStartPosition] respondsToSelector:@selector(boolValue)] ?
@@ -316,6 +383,11 @@ typedef NS_ENUM(NSUInteger, DVDBrandColorMode) {
         shouldReset = YES;
     }
     self.randomStartVelocityEnabled = newRandomVelocity;
+
+    BOOL newBounceParticles = [preferences[DVDLogoPreferenceKeyBounceParticles] respondsToSelector:@selector(boolValue)] ?
+        [preferences[DVDLogoPreferenceKeyBounceParticles] boolValue] :
+        [defaults[DVDLogoPreferenceKeyBounceParticles] boolValue];
+    self.bounceParticlesEnabled = newBounceParticles;
 
     if (shouldReset) {
         [self resetInitialState];

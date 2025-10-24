@@ -88,6 +88,14 @@ and behaviour instead of boilerplate.
 - `SSKPreferenceBinder` + `SSKConfigurationWindowController` – drop-in UI
   scaffold for settings windows with automatic binding between controls and
   `ScreenSaverDefaults`.
+- `SSKColorPalette` + `SSKPaletteManager` – shared palette definitions with
+  interpolation helpers and registration per saver module.
+- `SSKColorUtilities` – convenience serializers/deserializers for storing
+  `NSColor` instances inside `ScreenSaverDefaults`.
+- `SSKVectorMath` – small collection of inline NSPoint helpers (add, scale,
+  reflect, clamp) for animation math.
+- `SSKParticleSystem` – lightweight additive/alpha particle engine suitable for
+  bloom/glow effects and classic spark trails.
 
 ## Starter template
 

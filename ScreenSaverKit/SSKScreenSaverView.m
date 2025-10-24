@@ -3,7 +3,7 @@
 #import <AppKit/AppKit.h>
 #import <CoreFoundation/CoreFoundation.h>
 
-static const NSTimeInterval kSSKPreferencePollInterval = 0.5;
+static const NSTimeInterval kSSKPreferencePollInterval = 2.0;
 
 @interface SSKScreenSaverView ()
 @property (nonatomic, strong) NSTimer *ssk_preferenceWatchTimer;
@@ -11,6 +11,8 @@ static const NSTimeInterval kSSKPreferencePollInterval = 0.5;
 @property (nonatomic, strong) SSKAssetManager *ssk_assetManager;
 @property (nonatomic, strong) SSKAnimationClock *ssk_animationClock;
 @property (nonatomic, strong) NSMutableArray<SSKEntityPool *> *ssk_ownedPools;
+@property (nonatomic, strong) id ssk_defaultsObserver;
+- (void)ssk_checkPreferenceChanges:(id)sender;
 @end
 
 @implementation SSKScreenSaverView
@@ -116,21 +118,39 @@ static const NSTimeInterval kSSKPreferencePollInterval = 0.5;
 }
 
 - (void)ssk_startPreferenceMonitoring {
-    [self.ssk_preferenceWatchTimer invalidate];
-    self.ssk_preferenceWatchTimer = [NSTimer timerWithTimeInterval:kSSKPreferencePollInterval
-                                                            target:self
-                                                          selector:@selector(ssk_checkPreferenceChanges:)
-                                                          userInfo:nil
-                                                           repeats:YES];
-    [[NSRunLoop currentRunLoop] addTimer:self.ssk_preferenceWatchTimer forMode:NSRunLoopCommonModes];
+    if (!self.ssk_defaultsObserver) {
+        ScreenSaverDefaults *defaults = [self preferences];
+        __weak typeof(self) weakSelf = self;
+        self.ssk_defaultsObserver = [[NSNotificationCenter defaultCenter] addObserverForName:NSUserDefaultsDidChangeNotification
+                                                                                      object:defaults
+                                                                                       queue:[NSOperationQueue mainQueue]
+                                                                                  usingBlock:^(NSNotification *note) {
+            (void)note;
+            [weakSelf ssk_checkPreferenceChanges:nil];
+        }];
+    }
+    if (!self.ssk_preferenceWatchTimer) {
+        NSTimer *timer = [NSTimer timerWithTimeInterval:kSSKPreferencePollInterval
+                                                 target:self
+                                               selector:@selector(ssk_checkPreferenceChanges:)
+                                               userInfo:nil
+                                                repeats:YES];
+        self.ssk_preferenceWatchTimer = timer;
+        [[NSRunLoop currentRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
+    }
+    [self ssk_checkPreferenceChanges:nil];
 }
 
 - (void)ssk_stopPreferenceMonitoring {
+    if (self.ssk_defaultsObserver) {
+        [[NSNotificationCenter defaultCenter] removeObserver:self.ssk_defaultsObserver];
+        self.ssk_defaultsObserver = nil;
+    }
     [self.ssk_preferenceWatchTimer invalidate];
     self.ssk_preferenceWatchTimer = nil;
 }
 
-- (void)ssk_checkPreferenceChanges:(NSTimer *)timer {
+- (void)ssk_checkPreferenceChanges:(id)sender {
     NSDictionary *current = [self currentPreferences];
     if (!self.ssk_lastKnownPreferences) {
         self.ssk_lastKnownPreferences = current;
