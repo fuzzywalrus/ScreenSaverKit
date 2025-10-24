@@ -112,6 +112,7 @@ and behaviour instead of boilerplate.
 - `Demos/SimpleLines/` – layered drifting lines with palette selection and
   adjustable colour cycling speed. Build it via
   `make -f Demos/SimpleLines/Makefile`.
+- `Demos/DVDlogo/` – retro floating DVD logo with solid or rotating palette colour modes, adjustable size, speed, colour cycling, and optional random start behaviour. It also uses a multi-file project structure to demo a more advanced project structure. Build it via  `make -f Demos/DVDlogo/Makefile`.
 - `scripts/install-and-refresh.sh` – convenience script that builds, installs,
   and restarts the relevant macOS services (`legacyScreenSaver`,
   `WallpaperAgent`, `ScreenSaverEngine`) so macOS immediately sees your latest
