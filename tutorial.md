@@ -28,7 +28,7 @@ Before you begin, make sure you have:
    - If not installed, run: `xcode-select --install`
 
 ### 3. **ScreenSaverKit Repository**
-   - Clone the repo: `git clone https://github.com/YOUR_USERNAME/ScreenSaverKit.git`
+   - Clone the repo: `git clone https://github.com/fuzzywalrus/ScreenSaverKit.git`
    - Note the absolute path to the cloned directory (we'll call this `${REPO_ROOT}`)
 
 ### 4. **Basic Objective-C Knowledge**
@@ -446,7 +446,7 @@ Congratulations! You now have a solid understanding of ScreenSaverKit and can cr
 
 ### Resources
 
-- **ScreenSaverKit GitHub:** [github.com/YOUR_USERNAME/ScreenSaverKit](https://github.com/YOUR_USERNAME/ScreenSaverKit)
+- **ScreenSaverKit GitHub:** [github.com/fuzzywalrus/ScreenSaverKit](https://github.com/fuzzywalrus/ScreenSaverKit)
 - **Apple's ScreenSaver Framework Docs:** [developer.apple.com](https://developer.apple.com/documentation/screensaver)
 - **Objective-C Programming Guide:** [developer.apple.com](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ProgrammingWithObjectiveC/)
 
