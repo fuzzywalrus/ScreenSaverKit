@@ -50,6 +50,7 @@ stop_process() {
 stop_process "legacyScreenSaver"
 stop_process "WallpaperAgent"
 stop_process "ScreenSaverEngine"
+stop_process "cfprefsd"
 
 if (( RELAUNCH )); then
     echo "🚀 Relaunching ScreenSaverEngine..."

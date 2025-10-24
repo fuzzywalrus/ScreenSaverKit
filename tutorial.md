@@ -258,6 +258,15 @@ ScreenSaverKit includes a helper script that forces macOS to reload your screen 
 
 **Tip:** You can customize this script by editing the `make` target and install path at the top of the file.
 
+**Already have a bundle built?** Rebuild just the saver you’re working on, then restart the caching daemons:
+
+```bash
+cd Demos/HelloWorld && make clean all     # or whichever saver you tweaked
+./scripts/refresh-screensaver-services.sh  # add --launch to bring ScreenSaverEngine back
+```
+
+This avoids stale preview/full-screen behaviour without reinstalling everything from scratch.
+
 ### Manual Cache Clearing
 
 If you can't use the script, manually restart these processes:

@@ -105,6 +105,9 @@ static NSColor *SimpleLinesColorForProgress(NSArray<NSColor *> *colors, CGFloat 
 @property (nonatomic) BOOL trailsEnabled;
 @property (nonatomic, copy) NSString *paletteIdentifier;
 @property (nonatomic, strong) SSKConfigurationWindowController *configController;
+
+- (void)applyPreferences:(NSDictionary<NSString *, id> *)preferences
+             changedKeys:(nullable NSSet<NSString *> *)changedKeys;
 @end
 
 @implementation SimpleLinesView
@@ -123,14 +126,9 @@ static NSColor *SimpleLinesColorForProgress(NSArray<NSColor *> *colors, CGFloat 
     if ((self = [super initWithFrame:frame isPreview:isPreview])) {
         self.animationTimeInterval = 1.0 / 60.0;
         _particles = [NSMutableArray array];
-
-        NSDictionary *defaults = [self defaultPreferences];
-        _lineCount = [defaults[kPrefLineCount] integerValue];
-        _speedMultiplier = [defaults[kPrefSpeed] doubleValue];
-        _paletteIdentifier = [defaults[kPrefPalette] copy];
-        _colorRate = [defaults[kPrefColorRate] doubleValue];
-        _trailsEnabled = [defaults[kPrefTrailEnabled] boolValue];
-
+        NSDictionary *prefs = [self currentPreferences];
+        NSSet *allKeys = [NSSet setWithArray:prefs.allKeys];
+        [self applyPreferences:prefs changedKeys:allKeys];
         [self rebuildLines];
     }
     return self;
@@ -239,7 +237,11 @@ static NSColor *SimpleLinesColorForProgress(NSArray<NSColor *> *colors, CGFloat 
 }
 
 - (void)rebuildLines {
-    [self.particles removeAllObjects];
+    if (!self.particles) {
+        self.particles = [NSMutableArray array];
+    } else {
+        [self.particles removeAllObjects];
+    }
     NSInteger count = MAX(50, self.lineCount);
     NSRect bounds = self.bounds;
     CGFloat centerX = NSMidX(bounds);
@@ -260,6 +262,11 @@ static NSColor *SimpleLinesColorForProgress(NSArray<NSColor *> *colors, CGFloat 
 
 - (void)preferencesDidChange:(NSDictionary<NSString *,id> *)preferences
                  changedKeys:(NSSet<NSString *> *)changedKeys {
+    [self applyPreferences:preferences changedKeys:changedKeys];
+}
+
+- (void)applyPreferences:(NSDictionary<NSString *,id> *)preferences
+             changedKeys:(NSSet<NSString *> *)changedKeys {
     NSDictionary *defaults = [self defaultPreferences];
 
     NSInteger newCount = [preferences[kPrefLineCount] respondsToSelector:@selector(integerValue)] ?
@@ -285,8 +292,14 @@ static NSColor *SimpleLinesColorForProgress(NSArray<NSColor *> *colors, CGFloat 
         [preferences[kPrefTrailEnabled] boolValue] :
         [defaults[kPrefTrailEnabled] boolValue];
 
-    if (newCount != self.lineCount || [changedKeys containsObject:kPrefLineCount]) {
-        self.lineCount = newCount;
+    NSInteger previousCount = self.lineCount;
+    BOOL lineCountDirty = (newCount != previousCount);
+    if (changedKeys && [changedKeys containsObject:kPrefLineCount]) {
+        lineCountDirty = YES;
+    }
+    self.lineCount = newCount;
+
+    if (lineCountDirty) {
         [self rebuildLines];
     }
 }

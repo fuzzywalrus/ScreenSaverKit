@@ -20,14 +20,14 @@ static const NSTimeInterval kSSKPreferencePollInterval = 0.5;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         NSBundle *bundle = [NSBundle bundleForClass:self];
-        NSString *bundleName = [bundle objectForInfoDictionaryKey:(__bridge NSString *)kCFBundleNameKey];
         NSString *bundleIdentifier = bundle.bundleIdentifier;
+        NSString *bundleName = [bundle objectForInfoDictionaryKey:(__bridge NSString *)kCFBundleNameKey];
         NSString *className = NSStringFromClass(self);
 
-        NSString *preferred = bundleName.length ? bundleName : (bundleIdentifier.length ? bundleIdentifier : className);
+        NSString *preferred = bundleIdentifier.length ? bundleIdentifier : (bundleName.length ? bundleName : className);
         NSMutableArray<NSString *> *legacyDomains = [NSMutableArray array];
-        if (bundleIdentifier.length && ![bundleIdentifier isEqualToString:preferred]) {
-            [legacyDomains addObject:bundleIdentifier];
+        if (bundleName.length && ![bundleName isEqualToString:preferred]) {
+            [legacyDomains addObject:bundleName];
         }
         if (className.length && ![className isEqualToString:preferred]) {
             [legacyDomains addObject:className];

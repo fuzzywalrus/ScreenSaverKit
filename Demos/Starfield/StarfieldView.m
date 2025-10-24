@@ -12,6 +12,7 @@ static NSString * const kPrefFieldOfView        = @"classicStarFieldOfView";
 static NSString * const kPrefMotionBlur         = @"classicStarMotionBlur";
 static NSString * const kPrefBlurAmount         = @"classicStarBlurAmount";
 static NSString * const kPrefDirectionShifts    = @"classicStarDirectionShifts";
+static NSString * const kPrefStarSize           = @"classicStarSize";
 
 typedef struct {
     float x;
@@ -28,12 +29,16 @@ typedef struct {
 @property (nonatomic) CGFloat speedMultiplier;
 @property (nonatomic) CGFloat fieldOfView;
 @property (nonatomic) CGFloat blurAmount;
+@property (nonatomic) CGFloat starSize;
 @property (nonatomic) BOOL motionBlurEnabled;
 @property (nonatomic) BOOL directionShiftsEnabled;
 @property (nonatomic) NSPoint directionVector;
 @property (nonatomic) NSPoint targetDirectionVector;
 @property (nonatomic) NSTimeInterval timeUntilNextDirectionShift;
 @property (nonatomic, strong) SSKConfigurationWindowController *configController;
+
+- (void)applyPreferences:(NSDictionary<NSString *, id> *)preferences
+             changedKeys:(nullable NSSet<NSString *> *)changedKeys;
 @end
 
 @implementation StarfieldView
@@ -45,24 +50,20 @@ typedef struct {
         kPrefFieldOfView: @(1.35),
         kPrefMotionBlur: @(YES),
         kPrefBlurAmount: @(0.65),
-        kPrefDirectionShifts: @(YES)
+        kPrefDirectionShifts: @(YES),
+        kPrefStarSize: @(0.25)
     };
 }
 
 - (instancetype)initWithFrame:(NSRect)frame isPreview:(BOOL)isPreview {
     if ((self = [super initWithFrame:frame isPreview:isPreview])) {
         self.animationTimeInterval = 1.0 / 60.0;
-        _stars = [NSMutableArray array];
-        NSDictionary *defaults = [self defaultPreferences];
-        _starCount = [defaults[kPrefStarCount] integerValue];
-        _speedMultiplier = [defaults[kPrefSpeed] doubleValue];
-        _fieldOfView = [defaults[kPrefFieldOfView] doubleValue];
-        _motionBlurEnabled = [defaults[kPrefMotionBlur] boolValue];
-        _blurAmount = [defaults[kPrefBlurAmount] doubleValue];
-        _directionShiftsEnabled = [defaults[kPrefDirectionShifts] boolValue];
         _directionVector = NSZeroPoint;
         _targetDirectionVector = NSZeroPoint;
         _timeUntilNextDirectionShift = 0.0;
+        NSDictionary *prefs = [self currentPreferences];
+        NSSet *allKeys = [NSSet setWithArray:prefs.allKeys];
+        [self applyPreferences:prefs changedKeys:allKeys];
         [self rebuildStars];
     }
     return self;
@@ -114,11 +115,12 @@ typedef struct {
             continue;
         }
 
-        CGFloat depthFactor = MAX(0.0, 1.6f - star.z);
-        CGFloat radius = self.isPreview ? 1.4 : 2.0;
-        radius += depthFactor * 2.8;
+        CGFloat inverseDepth = 1.0 / MAX(0.2f, star.z);
+        CGFloat radius = (self.isPreview ? 1.3 : 1.8);
+        radius += inverseDepth * 7.0;
+        radius *= MAX(0.1, self.starSize);
 
-        CGFloat brightness = MIN(1.0, 0.3 + depthFactor * 0.9);
+        CGFloat brightness = MIN(1.0, 0.25 + inverseDepth * 1.8);
         NSColor *color = [NSColor colorWithCalibratedWhite:brightness alpha:1.0];
         CGContextSetFillColorWithColor(ctx, color.CGColor);
         CGContextFillEllipseInRect(ctx, CGRectMake(currentPoint.x - radius,
@@ -162,7 +164,7 @@ typedef struct {
         star.x += self.directionVector.x * depthVelocity * 0.75f;
         star.y += self.directionVector.y * depthVelocity * 0.75f;
 
-        BOOL needsReset = (star.z <= 0.05f) ||
+        BOOL needsReset = (star.z <= 0.15f) ||
                           (fabs(star.x) > 2.5f) ||
                           (fabs(star.y) > 2.5f);
 
@@ -199,10 +201,10 @@ typedef struct {
 - (ClassicStar)randomStar {
     ClassicStar star;
     CGFloat angle = ((CGFloat)arc4random() / UINT32_MAX) * (CGFloat)M_PI * 2.0;
-    CGFloat radius = sqrt(((CGFloat)arc4random() / UINT32_MAX)) * 1.2f;
+    CGFloat radius = sqrt(((CGFloat)arc4random() / UINT32_MAX)) * 1.6f;
     star.x = cos(angle) * radius;
     star.y = sin(angle) * radius;
-    star.z = 0.6f + ((CGFloat)arc4random() / UINT32_MAX) * 0.8f;
+    star.z = 1.0f + ((CGFloat)arc4random() / UINT32_MAX) * 1.9f;
     star.prevX = star.x;
     star.prevY = star.y;
     star.prevZ = star.z;
@@ -210,7 +212,11 @@ typedef struct {
 }
 
 - (void)rebuildStars {
-    [self.stars removeAllObjects];
+    if (!self.stars) {
+        self.stars = [NSMutableArray array];
+    } else {
+        [self.stars removeAllObjects];
+    }
     NSInteger count = MAX(50, self.starCount);
     for (NSInteger i = 0; i < count; i++) {
         ClassicStar star = [self randomStar];
@@ -238,6 +244,11 @@ typedef struct {
 
 - (void)preferencesDidChange:(NSDictionary<NSString *,id> *)preferences
                  changedKeys:(NSSet<NSString *> *)changedKeys {
+    [self applyPreferences:preferences changedKeys:changedKeys];
+}
+
+- (void)applyPreferences:(NSDictionary<NSString *,id> *)preferences
+             changedKeys:(nullable NSSet<NSString *> *)changedKeys {
     NSDictionary *defaults = [self defaultPreferences];
 
     NSInteger newCount = [preferences[kPrefStarCount] respondsToSelector:@selector(integerValue)] ?
@@ -264,8 +275,19 @@ typedef struct {
         [preferences[kPrefDirectionShifts] boolValue] :
         [defaults[kPrefDirectionShifts] boolValue];
 
-    if (newCount != self.starCount || [changedKeys containsObject:kPrefStarCount]) {
-        self.starCount = newCount;
+    double sizeSetting = [preferences[kPrefStarSize] respondsToSelector:@selector(doubleValue)] ?
+        [preferences[kPrefStarSize] doubleValue] :
+        [defaults[kPrefStarSize] doubleValue];
+    self.starSize = MAX(0.1, sizeSetting);
+
+    NSInteger previousCount = self.starCount;
+    BOOL starCountDirty = (newCount != previousCount);
+    if (changedKeys && [changedKeys containsObject:kPrefStarCount]) {
+        starCountDirty = YES;
+    }
+    self.starCount = newCount;
+
+    if (starCountDirty) {
         [self rebuildStars];
     }
 }
@@ -308,6 +330,13 @@ typedef struct {
                                              maxValue:2.2
                                                   key:kPrefFieldOfView
                                                format:@"%.2f"
+                                                binder:binder]];
+
+    [stack addArrangedSubview:[self sliderRowWithTitle:@"Star Size"
+                                             minValue:0.1
+                                             maxValue:3.0
+                                                  key:kPrefStarSize
+                                               format:@"%.2fx"
                                                 binder:binder]];
 
     [stack addArrangedSubview:[self sliderRowWithTitle:@"Motion Blur Length"

@@ -136,6 +136,27 @@ bundles. If you rebuild but don’t see changes, run the install-and-refresh
 script or manually quit `legacyScreenSaver`, `WallpaperAgent`, and
 `ScreenSaverEngine`, then reopen the Screen Saver panel.
 
+## Updating the demo savers after kit changes
+
+If you tweak code inside `ScreenSaverKit/`, rebuild any demos you want to test
+so they pick up the new implementation:
+
+```bash
+cd Demos/Starfield && make clean all
+cd Demos/SimpleLines && make clean all
+```
+
+After installing the refreshed bundle, restart the caching daemons to force
+macOS to load the new bits:
+
+```bash
+./scripts/refresh-screensaver-services.sh
+./scripts/refresh-screensaver-services.sh --launch   # optionally relaunches the preview
+```
+
+This mirrors the workflow shown earlier (`make …`, then refresh) and avoids the
+“preview updated, full screen is stale” confusion that can happen otherwise.
+
 ## Building the demo saver
 
 ```bash
