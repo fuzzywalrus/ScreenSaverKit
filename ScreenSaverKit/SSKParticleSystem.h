@@ -13,6 +13,7 @@ typedef NS_ENUM(NSUInteger, SSKParticleBlendMode) {
 
 typedef void (^SSKParticleInitializer)(SSKParticle *particle);
 typedef void (^SSKParticleUpdater)(SSKParticle *particle, NSTimeInterval dt);
+typedef void (^SSKParticleRenderer)(CGContextRef ctx, SSKParticle *particle);
 
 /// Represents a single particle instance managed by `SSKParticleSystem`.
 @interface SSKParticle : NSObject
@@ -25,6 +26,8 @@ typedef void (^SSKParticleUpdater)(SSKParticle *particle, NSTimeInterval dt);
 @property (nonatomic) CGFloat rotation;
 @property (nonatomic) CGFloat rotationVelocity;
 @property (nonatomic) CGFloat damping; // Applied per-second to velocity.
+@property (nonatomic) CGFloat userScalar;
+@property (nonatomic) NSPoint userVector;
 @end
 
 /// Lightweight particle system supporting additive and standard blending.
@@ -41,6 +44,9 @@ typedef void (^SSKParticleUpdater)(SSKParticle *particle, NSTimeInterval dt);
 
 /// Called for each alive particle every update tick. Assign to customise behaviour.
 @property (nonatomic, copy, nullable) SSKParticleUpdater updateHandler;
+
+/// Optional custom renderer used for drawing particles. When nil, a default blur disc is drawn.
+@property (nonatomic, copy, nullable) SSKParticleRenderer renderHandler;
 
 /// Emits `count` particles, initialising each with `initializer`.
 - (void)spawnParticles:(NSUInteger)count initializer:(SSKParticleInitializer)initializer;

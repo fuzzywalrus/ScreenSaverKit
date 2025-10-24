@@ -60,6 +60,8 @@
         particle.rotation = 0.0;
         particle.rotationVelocity = 0.0;
         particle.damping = 0.0;
+        particle.userScalar = 0.0;
+        particle.userVector = NSZeroPoint;
         initializer(particle);
         emitted++;
     }
@@ -103,6 +105,11 @@
         (void)idx;
         (void)stop;
         if (!particle.isAlive) { return; }
+        if (self.renderHandler) {
+            self.renderHandler(ctx, particle);
+            return;
+        }
+
         CGFloat remaining = 1.0 - (particle.life / MAX(0.0001, particle.maxLife));
         NSColor *color = particle.color ?: [NSColor whiteColor];
         NSColor *renderColor = [color colorWithAlphaComponent:color.alphaComponent * remaining];
@@ -146,6 +153,8 @@
         (void)idx;
         (void)stop;
         particle.alive = NO;
+        particle.userScalar = 0.0;
+        particle.userVector = NSZeroPoint;
     }];
     [self.availableIndices removeAllIndexes];
     [self.availableIndices addIndexesInRange:NSMakeRange(0, self.particles.count)];
