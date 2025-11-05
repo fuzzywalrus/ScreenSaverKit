@@ -1,13 +1,18 @@
 #import <Foundation/Foundation.h>
-#import <QuartzCore/CAMetalLayer.h>
 #import <Metal/Metal.h>
+#import <QuartzCore/CAMetalLayer.h>
 
 #import "SSKParticleSystem.h"
+#import "SSKMetalEffectStage.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
 @class SSKMetalParticlePass;
 @class SSKMetalTextureCache;
+
+FOUNDATION_EXPORT NSString * const SSKMetalEffectIdentifierBlur;
+FOUNDATION_EXPORT NSString * const SSKMetalEffectIdentifierBloom;
+FOUNDATION_EXPORT NSString * const SSKMetalEffectIdentifierColorGrading;
 
 /// Unified Metal renderer that owns the drawable lifecycle and provides
 /// higher-level drawing entry points for saver implementations.
@@ -45,6 +50,27 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// Applies colour grading parameters represented as a dictionary or future struct.
 - (void)applyColorGrading:(nullable id)params;
+
+/// Registers (or replaces) a custom effect stage.
+- (void)registerEffectStage:(SSKMetalEffectStage *)stage;
+
+/// Removes the stage for the supplied identifier.
+- (void)unregisterEffectStageWithIdentifier:(NSString *)identifier;
+
+/// Returns the stage registered for the identifier, if any.
+- (nullable SSKMetalEffectStage *)effectStageWithIdentifier:(NSString *)identifier;
+
+/// Returns the identifiers for all registered effect stages.
+- (NSArray<NSString *> *)registeredEffectIdentifiers;
+
+/// Applies a registered effect using the supplied parameters dictionary.
+- (BOOL)applyEffectWithIdentifier:(NSString *)identifier
+                       parameters:(nullable NSDictionary *)parameters;
+
+/// Applies multiple effects in the order provided. Parameters are looked up
+/// (optionally) using the effect identifier as the key.
+- (void)applyEffects:(NSArray<NSString *> *)identifiers
+          parameters:(nullable NSDictionary<NSString *, NSDictionary *> *)parameters;
 
 /// Sets the intermediate render target. Pass `nil` to restore the drawable.
 - (void)setRenderTarget:(nullable id<MTLTexture>)texture;

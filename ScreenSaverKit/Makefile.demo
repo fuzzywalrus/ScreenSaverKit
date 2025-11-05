@@ -47,6 +47,7 @@ SOURCES := \
 	SSKMetalRenderer.m \
 	SSKMetalScreenSaverView.m \
 	SSKMetalTextureCache.m \
+	SSKMetalEffectStage.m \
 	SSKMetalPass.m \
 	SSKMetalParticlePass.m \
 	SSKMetalBloomPass.m \

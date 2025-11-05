@@ -7,6 +7,10 @@
 #import "SSKMetalBlurPass.h"
 #import "SSKMetalBloomPass.h"
 
+NSString * const SSKMetalEffectIdentifierBlur = @"com.ssk.effects.blur";
+NSString * const SSKMetalEffectIdentifierBloom = @"com.ssk.effects.bloom";
+NSString * const SSKMetalEffectIdentifierColorGrading = @"com.ssk.effects.colorgrading";
+
 @interface SSKMetalRenderer ()
 @property (nonatomic, weak) CAMetalLayer *layer;
 @property (nonatomic, strong, readwrite) id<MTLDevice> device;
@@ -20,6 +24,7 @@
 @property (nonatomic, strong) SSKMetalParticlePass *particlePass;
 @property (nonatomic, strong, nullable) SSKMetalBlurPass *blurPass;
 @property (nonatomic, strong, nullable) SSKMetalBloomPass *bloomPass;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, SSKMetalEffectStage *> *effectRegistry;
 @property (nonatomic) BOOL needsClearOnNextPass;
 @end
 
@@ -47,6 +52,7 @@
         }
         _clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
         _textureCache = [[SSKMetalTextureCache alloc] initWithDevice:device];
+        _effectRegistry = [[NSMutableDictionary alloc] init];
 
         _shaderLibrary = [self loadDefaultLibraryWithDevice:device];
         if (!_shaderLibrary) {
@@ -73,6 +79,7 @@
             }
             _bloomPass = nil;
         }
+        [self configureDefaultEffectStages];
         _particleBlurRadius = 0.0;
         _bloomThreshold = 0.8f;
         _bloomBlurSigma = 3.0f;
@@ -175,26 +182,17 @@
     if (clamped <= 0.01f) {
         return;
     }
-    if (!self.blurPass) {
+    if (![self effectStageWithIdentifier:SSKMetalEffectIdentifierBlur]) {
         if ([SSKDiagnostics isEnabled]) {
             [SSKDiagnostics log:@"SSKMetalRenderer: blur pass unavailable – skipping blur."];
         }
         return;
     }
 
-    id<MTLCommandBuffer> commandBuffer = self.currentCommandBuffer;
-    id<MTLTexture> target = [self activeRenderTarget];
-    if (!commandBuffer || !target) {
-        return;
-    }
-
-    self.blurPass.radius = clamped;
-    BOOL success = [self.blurPass encodeBlur:target
-                                  destination:target
-                                commandBuffer:commandBuffer
-                                 textureCache:self.textureCache];
+    BOOL success = [self applyEffectWithIdentifier:SSKMetalEffectIdentifierBlur
+                                        parameters:@{ @"radius": @(clamped) }];
     if (!success && [SSKDiagnostics isEnabled]) {
-        [SSKDiagnostics log:@"SSKMetalRenderer: blur pass failed to encode."];
+        [SSKDiagnostics log:@"SSKMetalRenderer: blur effect failed to apply."];
     }
 }
 
@@ -203,35 +201,101 @@
     if (clamped <= 0.01f) {
         return;
     }
-    if (!self.bloomPass) {
+    if (![self effectStageWithIdentifier:SSKMetalEffectIdentifierBloom]) {
         if ([SSKDiagnostics isEnabled]) {
             [SSKDiagnostics log:@"SSKMetalRenderer: bloom pass unavailable – skipping bloom."];
         }
         return;
     }
 
-    id<MTLCommandBuffer> commandBuffer = self.currentCommandBuffer;
-    id<MTLTexture> target = [self activeRenderTarget];
-    if (!commandBuffer || !target) {
-        return;
-    }
-
-    self.bloomPass.intensity = clamped;
-    self.bloomPass.threshold = MAX(0.0, self.bloomThreshold);
-    self.bloomPass.blurSigma = MAX(0.1, self.bloomBlurSigma);
-    BOOL success = [self.bloomPass encodeBloomWithCommandBuffer:commandBuffer
-                                                         source:target
-                                                   renderTarget:target
-                                                   textureCache:self.textureCache];
+    NSDictionary *parameters = @{
+        @"intensity": @(clamped),
+        @"threshold": @(MAX(0.0, self.bloomThreshold)),
+        @"sigma": @(MAX(0.1, self.bloomBlurSigma)),
+    };
+    BOOL success = [self applyEffectWithIdentifier:SSKMetalEffectIdentifierBloom
+                                        parameters:parameters];
     if (!success && [SSKDiagnostics isEnabled]) {
-        [SSKDiagnostics log:@"SSKMetalRenderer: bloom pass failed to encode."];
+        [SSKDiagnostics log:@"SSKMetalRenderer: bloom effect failed to apply."];
     }
 }
 
 - (void)applyColorGrading:(id)params {
-    (void)params;
-    if ([SSKDiagnostics isEnabled]) {
-        [SSKDiagnostics log:@"SSKMetalRenderer: applyColorGrading: invoked but not yet implemented."];
+    SSKMetalEffectStage *stage = [self effectStageWithIdentifier:SSKMetalEffectIdentifierColorGrading];
+    if (!stage) {
+        (void)params;
+        if ([SSKDiagnostics isEnabled]) {
+            [SSKDiagnostics log:@"SSKMetalRenderer: applyColorGrading: invoked but no color grading stage registered."];
+        }
+        return;
+    }
+    NSDictionary *parameters = nil;
+    if ([params isKindOfClass:[NSDictionary class]]) {
+        parameters = params;
+    } else if (params) {
+        parameters = @{ @"payload": params };
+    }
+    BOOL success = [self applyEffectWithIdentifier:SSKMetalEffectIdentifierColorGrading
+                                        parameters:parameters];
+    if (!success && [SSKDiagnostics isEnabled]) {
+        [SSKDiagnostics log:@"SSKMetalRenderer: color grading effect failed to apply."];
+    }
+}
+
+- (void)registerEffectStage:(SSKMetalEffectStage *)stage {
+    if (!stage || stage.identifier.length == 0) {
+        return;
+    }
+    if (!self.effectRegistry) {
+        self.effectRegistry = [[NSMutableDictionary alloc] init];
+    }
+    self.effectRegistry[stage.identifier] = stage;
+}
+
+- (void)unregisterEffectStageWithIdentifier:(NSString *)identifier {
+    if (identifier.length == 0 || !self.effectRegistry) {
+        return;
+    }
+    [self.effectRegistry removeObjectForKey:identifier];
+}
+
+- (SSKMetalEffectStage *)effectStageWithIdentifier:(NSString *)identifier {
+    if (identifier.length == 0 || !self.effectRegistry) {
+        return nil;
+    }
+    return self.effectRegistry[identifier];
+}
+
+- (NSArray<NSString *> *)registeredEffectIdentifiers {
+    if (!self.effectRegistry.count) {
+        return @[];
+    }
+    return [[self.effectRegistry allKeys] sortedArrayUsingSelector:@selector(compare:)];
+}
+
+- (BOOL)applyEffectWithIdentifier:(NSString *)identifier
+                       parameters:(NSDictionary *)parameters {
+    if (identifier.length == 0) {
+        return NO;
+    }
+    SSKMetalEffectStage *stage = [self effectStageWithIdentifier:identifier];
+    if (!stage) {
+        return NO;
+    }
+    id<MTLCommandBuffer> commandBuffer = self.currentCommandBuffer;
+    id<MTLTexture> target = [self activeRenderTarget];
+    if (!commandBuffer || !target) {
+        return NO;
+    }
+    NSDictionary *effectiveParameters = parameters ?: @{};
+    return stage.handler(self, stage.pass, commandBuffer, target, effectiveParameters);
+}
+
+- (void)applyEffects:(NSArray<NSString *> *)identifiers
+          parameters:(NSDictionary<NSString *, NSDictionary *> *)parameters {
+    for (NSString *identifier in identifiers) {
+        NSDictionary *params = parameters[identifier];
+        [self applyEffectWithIdentifier:identifier parameters:params];
     }
 }
 
@@ -240,6 +304,61 @@
 }
 
 #pragma mark - Helpers
+
+- (void)configureDefaultEffectStages {
+    [self unregisterEffectStageWithIdentifier:SSKMetalEffectIdentifierBlur];
+    [self unregisterEffectStageWithIdentifier:SSKMetalEffectIdentifierBloom];
+
+    if (self.blurPass) {
+        SSKMetalEffectStage *blurStage = [[SSKMetalEffectStage alloc] initWithIdentifier:SSKMetalEffectIdentifierBlur
+                                                                                    pass:self.blurPass
+                                                                                 handler:^BOOL(SSKMetalRenderer *renderer, SSKMetalPass *pass, id<MTLCommandBuffer> commandBuffer, id<MTLTexture> renderTarget, NSDictionary *parameters) {
+            SSKMetalBlurPass *blurPass = (SSKMetalBlurPass *)pass;
+            CGFloat radius = MAX(0.0, [parameters[@"radius"] doubleValue]);
+            if (radius <= 0.01f) {
+                return YES;
+            }
+            blurPass.radius = radius;
+            BOOL success = [blurPass encodeBlur:renderTarget
+                                      destination:renderTarget
+                                    commandBuffer:commandBuffer
+                                     textureCache:renderer.textureCache];
+            if (!success && [SSKDiagnostics isEnabled]) {
+                [SSKDiagnostics log:@"SSKMetalRenderer: blur pass failed to encode."];
+            }
+            return success;
+        }];
+        [self registerEffectStage:blurStage];
+    }
+
+    if (self.bloomPass) {
+        SSKMetalEffectStage *bloomStage = [[SSKMetalEffectStage alloc] initWithIdentifier:SSKMetalEffectIdentifierBloom
+                                                                                     pass:self.bloomPass
+                                                                                  handler:^BOOL(SSKMetalRenderer *renderer, SSKMetalPass *pass, id<MTLCommandBuffer> commandBuffer, id<MTLTexture> renderTarget, NSDictionary *parameters) {
+            SSKMetalBloomPass *bloomPass = (SSKMetalBloomPass *)pass;
+            CGFloat intensity = MAX(0.0, [parameters[@"intensity"] doubleValue]);
+            if (intensity <= 0.01f) {
+                return YES;
+            }
+            NSNumber *thresholdNumber = parameters[@"threshold"];
+            NSNumber *sigmaNumber = parameters[@"sigma"];
+            CGFloat threshold = thresholdNumber ? thresholdNumber.doubleValue : renderer.bloomThreshold;
+            CGFloat sigma = sigmaNumber ? sigmaNumber.doubleValue : renderer.bloomBlurSigma;
+            bloomPass.intensity = intensity;
+            bloomPass.threshold = MAX(0.0, threshold);
+            bloomPass.blurSigma = MAX(0.1, sigma);
+            BOOL success = [bloomPass encodeBloomWithCommandBuffer:commandBuffer
+                                                            source:renderTarget
+                                                      renderTarget:renderTarget
+                                                      textureCache:renderer.textureCache];
+            if (!success && [SSKDiagnostics isEnabled]) {
+                [SSKDiagnostics log:@"SSKMetalRenderer: bloom pass failed to encode."];
+            }
+            return success;
+        }];
+        [self registerEffectStage:bloomStage];
+    }
+}
 
 - (nullable id<MTLLibrary>)loadDefaultLibraryWithDevice:(id<MTLDevice>)device {
     NSBundle *bundle = [NSBundle bundleForClass:self.class];
