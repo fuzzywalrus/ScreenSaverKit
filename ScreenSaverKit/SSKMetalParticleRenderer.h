@@ -26,6 +26,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// Clear colour used when filling the drawable (defaults to opaque black).
 @property (nonatomic) MTLClearColor clearColor;
 
+/// Optional post-process Gaussian blur radius applied after Metal rendering.
+/// Set to > 0 to enable the blur.
+@property (nonatomic) CGFloat blurRadius;
+
 @end
 
 NS_ASSUME_NONNULL_END

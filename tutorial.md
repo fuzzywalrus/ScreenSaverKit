@@ -7,12 +7,14 @@ Welcome to ScreenSaverKit! This tutorial will guide you through creating your fi
 - How to build and install a macOS screen saver bundle
 - How to use ScreenSaverKit's base class and helper features
 - How to add preferences that users can configure in real-time
-- How to debug and iterate on your screen saver
+- How to debug and iterate on your screen saver efficiently
+- How to create hardware-accelerated particle effects with Metal
 - How to create your own custom screen saver from scratch
+- Advanced features like color palettes, vector math, and asset management
 
 ## What is ScreenSaverKit?
 
-ScreenSaverKit is a modern Objective-C framework that simplifies macOS screen saver development. It handles the boilerplate code for preferences, animation timing, asset loading, and configuration UI, letting you focus on the creative aspects of your screen saver.
+ScreenSaverKit is a modern Objective-C framework that simplifies macOS screen saver development. It handles the boilerplate code for preferences, animation timing, asset loading, and configuration UI, letting you focus on the creative aspects of your screen saver. It includes a powerful hardware-accelerated particle system with automatic Metal GPU rendering and CPU fallback for maximum compatibility.
 
 ---
 
@@ -240,21 +242,23 @@ macOS caches screen saver bundles aggressively, which can make development frust
 
 ### The Cache Problem
 
-After making code changes and rebuilding, you might still see the old version running in System Settings. This happens because macOS loads screen savers into memory and doesn't check for updates.
+After making code changes and rebuilding, you might still see the old version running in System Settings. This happens because macOS caches screen savers at multiple levels: preferences, icons, bundle metadata, and the Launch Services database.
 
 ### Solution: Use the Refresh Script
 
-ScreenSaverKit includes a helper script that forces macOS to reload your screen saver:
+ScreenSaverKit includes a helper script that clears all caches and forces macOS to reload your screen saver:
 
 ```bash
-./scripts/install-and-refresh.sh
+./scripts/install-and-refresh.sh Demos/HelloWorld
 ```
 
 **What it does:**
 1. Rebuilds your screen saver using `make`
 2. Copies the new bundle to `~/Library/Screen Savers/`
-3. Kills the background processes (`legacyScreenSaver`, `WallpaperAgent`, `ScreenSaverEngine`)
-4. The next time you open System Settings, it loads the fresh version
+3. Quits System Settings/Preferences (if running)
+4. Kills background processes (`legacyScreenSaver`, `WallpaperAgent`, `ScreenSaverEngine`)
+5. Clears cache daemons (`cfprefsd`, `iconservicesd`, `lsd`)
+6. The next time you open System Settings, it loads the fresh version
 
 **Tip:** You can customize this script by editing the `make` target and install path at the top of the file.
 
@@ -269,13 +273,17 @@ This avoids stale preview/full-screen behaviour without reinstalling everything 
 
 ### Manual Cache Clearing
 
-If you can't use the script, manually restart these processes:
+If you can't use the script, manually clear caches by quitting System Settings and killing these processes:
 
 ```bash
-killall legacyScreenSaver WallpaperAgent ScreenSaverEngine
+# Quit System Settings first
+osascript -e 'quit app "System Settings"'
+
+# Kill screen saver services
+killall legacyScreenSaver WallpaperAgent ScreenSaverEngine cfprefsd iconservicesd lsd
 ```
 
-Then reopen System Settings → Screen Saver.
+Then reopen System Settings → Screen Saver. Note: `lsd` (Launch Services daemon) will restart automatically and rebuild its database.
 
 ### Development Workflow
 
@@ -355,46 +363,146 @@ Your new screen saver should appear in System Settings!
 
 ScreenSaverKit provides additional features beyond what the HelloWorld demo shows:
 
+### Hardware-Accelerated Particle Systems
+
+ScreenSaverKit includes a powerful particle system with automatic Metal GPU acceleration and CPU fallback:
+
+```objc
+#import "ScreenSaverKit/SSKParticleSystem.h"
+#import "ScreenSaverKit/SSKMetalParticleRenderer.h"
+
+// Create particle system
+self.particleSystem = [[SSKParticleSystem alloc] initWithCapacity:1024];
+self.particleSystem.blendMode = SSKParticleBlendModeAdditive;  // For glowing effects
+self.particleSystem.globalDamping = 0.98;  // Slight air resistance
+
+// Set up Metal rendering (optional - automatically falls back to CPU if unavailable)
+self.wantsLayer = YES;
+CAMetalLayer *metalLayer = [CAMetalLayer layer];
+metalLayer.device = MTLCreateSystemDefaultDevice();
+self.layer = metalLayer;
+self.metalRenderer = [[SSKMetalParticleRenderer alloc] initWithLayer:metalLayer];
+
+// Spawn particles in animateOneFrame
+[self.particleSystem spawnParticles:50 initializer:^(SSKParticle *particle) {
+    particle.position = NSMakePoint(centerX, centerY);
+    particle.velocity = NSMakePoint(cos(angle) * speed, sin(angle) * speed);
+    particle.color = [NSColor colorWithHue:hue saturation:0.8 brightness:1.0 alpha:1.0];
+    particle.life = 0.0;        // Start alive
+    particle.maxLife = 2.0;     // Live for 2 seconds
+    particle.size = 10.0;
+    particle.behaviorOptions = SSKParticleBehaviorOptionFadeAlpha | SSKParticleBehaviorOptionFadeSize;
+}];
+
+// Update and render
+[self.particleSystem advanceBy:deltaTime];
+BOOL usedMetal = [self.particleSystem renderWithMetalRenderer:self.metalRenderer
+                                                    blendMode:self.particleSystem.blendMode
+                                                 viewportSize:self.bounds.size];
+if (!usedMetal) {
+    [self setNeedsDisplay:YES];  // Fall back to CPU rendering in drawRect:
+}
+```
+
+**See the demos:**
+- `Demos/RibbonFlow/` - Flowing ribbons with Metal-accelerated particles
+- `Demos/MetalParticleTest/` - Diagnostic particle fountain with Metal/CPU fallback
+- Full documentation: `ScreenSaverKit/SSKParticleSystem.md`
+
 ### Asset Loading
 
 Load images and other resources from your bundle:
 
 ```objc
-NSImage *myImage = [self loadImageResourceNamed:@"logo.png"];
+NSImage *myImage = [self.assetManager imageNamed:@"logo"];
 ```
 
-Place assets in your `.saver` bundle's `Resources` folder and reference them by name.
+The asset manager automatically handles image caching and extension fallback (.png, .jpg, etc.).
 
 ### Diagnostics Overlay
 
 Enable the built-in FPS and performance overlay:
 
 ```objc
-[self setDiagnosticsEnabled:YES];
+[SSKDiagnostics setEnabled:YES];
+
+// In drawRect:
+[SSKDiagnostics drawOverlayInView:self
+                             text:@"My Screen Saver"
+                  framesPerSecond:self.animationClock.framesPerSecond];
 ```
 
-This displays frame rate, frame time, and other useful stats in the corner of the screen during development.
+This displays frame rate, frame time, and custom status text during development.
 
 ### Entity Pools
 
-For particle systems or object pooling, use the built-in entity management:
+For managing large numbers of reusable objects efficiently:
 
 ```objc
-SSKEntityPool *pool = [[SSKEntityPool alloc] initWithCapacity:100];
+SSKEntityPool *pool = [self makeEntityPoolWithCapacity:100 factory:^id{
+    return [[MyCustomObject alloc] init];
+}];
+
+// Acquire and release objects instead of creating new ones
+MyCustomObject *obj = [pool acquire];
+// ... use object ...
+[pool releaseObject:obj];
 ```
 
-This helps manage large numbers of animated objects efficiently.
+This reduces allocation overhead in tight animation loops.
 
 ### Multiple Monitor Support
 
 `SSKScreenSaverView` automatically handles multi-monitor setups. Each monitor gets its own instance of your view, allowing you to create coordinated animations across displays.
 
+### Color Palettes and Utilities
+
+ScreenSaverKit includes utilities for working with colors:
+
+```objc
+#import "ScreenSaverKit/SSKColorPalette.h"
+#import "ScreenSaverKit/SSKColorUtilities.h"
+
+// Use built-in palettes
+SSKColorPalette *palette = [SSKPaletteManager paletteNamed:@"Sunset"];
+NSColor *color = [palette colorAtProgress:0.5];  // Interpolate through palette
+
+// Store colors in preferences
+NSString *colorString = SSKColorToString([NSColor redColor]);
+[self setPreferenceValue:colorString forKey:@"backgroundColor"];
+
+// Restore colors from preferences
+NSColor *saved = SSKColorFromString(prefs[@"backgroundColor"]);
+```
+
+### Vector Math Helpers
+
+For smooth animations and physics:
+
+```objc
+#import "ScreenSaverKit/SSKVectorMath.h"
+
+NSPoint velocity = NSMakePoint(10, 5);
+velocity = SSKPointScale(velocity, deltaTime);  // Scale by time
+velocity = SSKPointClamp(velocity, -100, 100);  // Limit magnitude
+
+// Bounce off walls
+if (x < 0 || x > bounds.width) {
+    velocity = SSKPointReflect(velocity, NSMakePoint(1, 0));
+}
+```
+
 ### Full Documentation
 
 For a complete API reference, check the inline documentation in:
 - `ScreenSaverKit/SSKScreenSaverView.h` - Main base class
+- `ScreenSaverKit/SSKParticleSystem.h` - Particle system API
+- `ScreenSaverKit/SSKParticleSystem.md` - Particle system documentation and examples
+- `ScreenSaverKit/SSKMetalParticleRenderer.h` - Metal GPU renderer
 - `ScreenSaverKit/SSKPreferenceBinder.h` - Preference UI binding
 - `ScreenSaverKit/SSKConfigurationWindowController.h` - Configuration window management
+- `ScreenSaverKit/SSKColorPalette.h` - Color palette utilities
+- `ScreenSaverKit/SSKVectorMath.h` - Vector math helpers
 
 ---
 
@@ -408,17 +516,23 @@ For a complete API reference, check the inline documentation in:
 | **"Cannot find ScreenSaver framework" error** | Make sure Xcode Command Line Tools are installed: `xcode-select --install` |
 | **Preferences not updating in real-time** | Verify you're calling `refreshPreferencesIfNeeded` in `animateOneFrame` and that `preferencesDidChange:changedKeys:` is implemented. |
 | **Configuration sheet doesn't appear** | Check that your `hasConfigureSheet` method returns `YES` and that you've implemented `configureSheet:`. |
-| **Blank/black screen in preview** | Add debug logging to `drawRect:` to verify it's being called. Make sure you're calling `[self setNeedsDisplay:YES]` in `animateOneFrame`. |
+| **Blank/black screen in preview** | Add debug logging to `drawRect:` to verify it's being called. Make sure you're calling `[self setNeedsDisplay:YES]` in `animateOneFrame`. For Metal rendering, check Console.app for shader errors. |
 | **Missing headers in custom project** | Add `-I/path/to/ScreenSaverKit` to your `CFLAGS` (see the demo Makefile for reference). |
-| **Screen saver doesn't appear in System Settings** | Verify your `Info.plist` has the correct `NSPrincipalClass` and that the bundle is properly installed in `~/Library/Screen Savers/`. |
+| **Screen saver doesn't appear in System Settings** | Verify your `Info.plist` has the correct `NSPrincipalClass` and that the bundle is properly installed in `~/Library/Screen Savers/`. Run the refresh script to clear Launch Services cache. |
+| **Metal particles render as black** | Ensure instance buffer is bound to BOTH vertex and fragment shaders. Check that particles spawn with `life = 0.0`, not `life = maxLife`. |
+| **Metal renderer initialization fails** | Wait for view to be in window before creating Metal layer. Check Console.app for "SSKMetalParticleRenderer" errors. See `Demos/MetalDiagnostic/` for diagnostic tool. |
+| **Particles disappear immediately** | Verify `particle.life = 0.0` (not `maxLife`) when spawning. Particles age from 0 to maxLife over their lifetime. |
 
 ### Debugging Tips
 
-1. **Add logging:** Use `NSLog(@"...")` liberally during development to understand execution flow
-2. **Check Console.app:** Open Console.app and filter for your bundle ID to see crash logs and errors
-3. **Test in preview mode:** Always test in System Settings preview before testing the full-screen activation
-4. **Simplify your code:** If something breaks, comment out sections until you find the problematic code
-5. **Check memory usage:** Screen savers should be lightweight. Use Instruments.app to profile if needed
+1. **Add logging:** Use `NSLog(@"...")` or `[SSKDiagnostics log:@"..."]` liberally during development to understand execution flow
+2. **Check Console.app:** Open Console.app and filter for your bundle ID to see crash logs and errors. For Metal issues, filter for "SSKMetalParticleRenderer"
+3. **Use diagnostic demos:** Run `Demos/MetalDiagnostic/` to verify Metal is working on your system before debugging your own Metal code
+4. **Test in preview mode:** Always test in System Settings preview before testing the full-screen activation
+5. **Enable diagnostics overlay:** Call `[SSKDiagnostics setEnabled:YES]` to see FPS and status information on-screen
+6. **Simplify your code:** If something breaks, comment out sections until you find the problematic code
+7. **Check memory usage:** Screen savers should be lightweight. Use Instruments.app to profile if needed
+8. **Metal debugging:** Use Xcode's Metal debugger to capture frames and inspect shader execution (requires running from Xcode)
 
 ### Getting Help
 
@@ -437,12 +551,15 @@ Congratulations! You now have a solid understanding of ScreenSaverKit and can cr
 
 - **Animated clock or calendar** with beautiful typography
 - **Photo slideshow** with smooth transitions and effects
-- **Particle simulation** (rain, snow, fireworks, etc.)
+- **Particle effects** (rain, snow, fireworks, sparks, smoke, flowing ribbons)
 - **Generative art** with procedural patterns
-- **System monitor** displaying CPU, memory, network stats
+- **System monitor** displaying CPU, memory, network stats with animated graphs
 - **Quote or word-of-the-day** display with elegant animations
-- **3D visualizations** using Core Animation or OpenGL
+- **Starfield or space scenes** with depth and motion blur
 - **Conway's Game of Life** or other cellular automata
+- **Abstract visualizations** with GPU-accelerated particle trails
+- **Northern lights simulation** using additive particle blending
+- **Matrix-style falling code** with custom fonts and colors
 
 ### Resources
 

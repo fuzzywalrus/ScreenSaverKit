@@ -648,11 +648,7 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     [self markAllStatesDirty];
 }
 
-- (BOOL)renderWithMetalRenderer:(SSKMetalParticleRenderer *)renderer
-                       blendMode:(SSKParticleBlendMode)blendMode
-                    viewportSize:(CGSize)viewportSize {
-    if (!renderer) { return NO; }
-
+- (NSArray<SSKParticle *> *)aliveParticlesSnapshot {
     NSMutableArray<SSKParticle *> *alive = nil;
     for (SSKParticle *particle in self.particles) {
         if (particle.isAlive) {
@@ -662,7 +658,15 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
             [alive addObject:particle];
         }
     }
-    NSArray<SSKParticle *> *snapshot = alive ?: @[];
+    return alive ?: @[];
+}
+
+- (BOOL)renderWithMetalRenderer:(SSKMetalParticleRenderer *)renderer
+                       blendMode:(SSKParticleBlendMode)blendMode
+                    viewportSize:(CGSize)viewportSize {
+    if (!renderer) { return NO; }
+
+    NSArray<SSKParticle *> *snapshot = [self aliveParticlesSnapshot];
     return [renderer renderParticles:snapshot blendMode:blendMode viewportSize:viewportSize];
 }
 

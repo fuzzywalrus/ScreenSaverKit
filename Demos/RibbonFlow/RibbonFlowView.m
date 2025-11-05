@@ -2,6 +2,7 @@
 
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
+#import <CoreImage/CoreImage.h>
 #import <Metal/Metal.h>
 
 #import "RibbonFlowPalettes.h"
@@ -9,7 +10,8 @@
 #import "ScreenSaverKit/SSKColorUtilities.h"
 #import "ScreenSaverKit/SSKConfigurationWindowController.h"
 #import "ScreenSaverKit/SSKDiagnostics.h"
-#import "ScreenSaverKit/SSKMetalParticleRenderer.h"
+#import "ScreenSaverKit/SSKMetalRenderer.h"
+#import "ScreenSaverKit/SSKLayerEffects.h"
 #import "ScreenSaverKit/SSKPaletteManager.h"
 #import "ScreenSaverKit/SSKParticleSystem.h"
 #import "ScreenSaverKit/SSKPreferenceBinder.h"
@@ -23,6 +25,8 @@ static NSString * const kPrefAdditiveBlend = @"ribbonFlowAdditiveBlend";
 static NSString * const kPrefDiagnostics   = @"ribbonFlowDiagnostics";
 static NSString * const kPrefSoftEdges    = @"ribbonFlowSoftEdges";
 static NSString * const kPrefFrameRate    = @"ribbonFlowFrameRate";
+static NSString * const kPrefTrailOpacity = @"ribbonFlowTrailOpacity";
+static NSString * const kPrefBlurRadius   = @"ribbonFlowBlurRadius";
 
 typedef struct {
     NSPoint position;
@@ -41,12 +45,7 @@ typedef struct {
 @property (nonatomic) CGFloat trailWidth;
 @property (nonatomic) BOOL additiveBlend;
 @property (nonatomic, copy) NSString *paletteIdentifier;
-@property (nonatomic) BOOL metalEnabled;
-@property (nonatomic, strong) id<MTLDevice> metalDevice;
-@property (nonatomic, strong) CAMetalLayer *metalLayer;
-@property (nonatomic, strong) SSKMetalParticleRenderer *metalRenderer;
 @property (nonatomic) BOOL metalRenderingActive;
-@property (nonatomic) BOOL awaitingMetalDrawable;
 @property (nonatomic) NSUInteger metalSuccessCount;
 @property (nonatomic) NSUInteger metalFailureCount;
 @property (nonatomic, copy) NSString *metalStatusText;
@@ -54,6 +53,8 @@ typedef struct {
 @property (nonatomic, getter=isDiagnosticsEnabled) BOOL diagnosticsEnabled;
 @property (nonatomic) BOOL softEdgesEnabled;
 @property (nonatomic) NSInteger targetFramesPerSecond;
+@property (nonatomic) CGFloat trailOpacity;
+@property (nonatomic) CGFloat blurRadius;
 @end
 
 @implementation RibbonFlowView
@@ -72,6 +73,8 @@ typedef struct {
         kPrefDiagnostics: @(YES),
         kPrefSoftEdges: @(YES),
         kPrefFrameRate: @"30",
+        kPrefTrailOpacity: @(0.6),
+        kPrefBlurRadius: @(0.0),
         kPrefPalette: RibbonFlowDefaultPaletteIdentifier()
     };
 }
@@ -83,12 +86,13 @@ typedef struct {
         _emitters = [NSMutableArray array];
         _particleSystem = [[SSKParticleSystem alloc] initWithCapacity:2048];
         self.particleSystem.metalSimulationEnabled = NO;
-        self.metalEnabled = NO;
         self.metalRenderingActive = NO;
         self.diagnosticsEnabled = YES;
         self.softEdgesEnabled = YES;
         self.targetFramesPerSecond = 30;
-        self.metalStatusText = @"Metal: waiting for device";
+        self.trailOpacity = 0.6;
+        self.blurRadius = 0.0;
+        self.metalStatusText = @"Metal: initialising";
         _metalSuccessCount = 0;
         _metalFailureCount = 0;
 
@@ -100,6 +104,13 @@ typedef struct {
         [self rebuildEmitters];
     }
     return self;
+}
+
+- (void)setupMetalRenderer:(SSKMetalRenderer *)renderer {
+    [super setupMetalRenderer:renderer];
+    renderer.clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
+    renderer.particleBlurRadius = MAX(0.0, self.blurRadius);
+    [self refreshDiagnosticsOverlay];
 }
 
 - (void)setMetalStatusText:(NSString *)metalStatusText {
@@ -114,36 +125,58 @@ typedef struct {
     if (_diagnosticsEnabled == diagnosticsEnabled) { return; }
     _diagnosticsEnabled = diagnosticsEnabled;
     [SSKDiagnostics setEnabled:diagnosticsEnabled];
-    if (self.metalStatusLayer) {
-        self.metalStatusLayer.hidden = !diagnosticsEnabled;
-    }
     if (!diagnosticsEnabled) {
         [self setNeedsDisplay:YES];
     }
-    [self updateMetalStatusLayerString];
+    [self refreshDiagnosticsOverlay];
 }
 
 - (void)setSoftEdgesEnabled:(BOOL)softEdgesEnabled {
     if (_softEdgesEnabled == softEdgesEnabled) { return; }
     _softEdgesEnabled = softEdgesEnabled;
     [self configureParticleRenderHandler];
+    [self setNeedsDisplay:YES];
+}
+
+- (void)setBlurRadius:(CGFloat)blurRadius {
+    CGFloat clamped = MAX(0.0, blurRadius);
+    if (fabs(_blurRadius - clamped) < 0.001) { return; }
+    _blurRadius = clamped;
+    [self updateLayerBlurFilter];
+    if (self.metalRenderer) {
+        self.metalRenderer.particleBlurRadius = MAX(0.0, _blurRadius);
+    }
+    if (_blurRadius > 0.01) {
+        self.metalStatusText = @"Metal: gaussian blur active";
+    }
+    [self setNeedsDisplay:YES];
+    [self refreshDiagnosticsOverlay];
+}
+
+- (void)setTrailOpacity:(CGFloat)trailOpacity {
+    CGFloat clamped = MIN(MAX(trailOpacity, 0.05), 1.0);
+    if (fabs(_trailOpacity - clamped) < 0.001) { return; }
+    _trailOpacity = clamped;
+    [self setNeedsDisplay:YES];
 }
 
 - (void)setFrame:(NSRect)frame {
     [super setFrame:frame];
     [self clampEmittersToBounds];
-    [self updateMetalSupportIfNeeded];
 }
 
 - (void)viewDidMoveToWindow {
     [super viewDidMoveToWindow];
-    [self updateMetalSupportIfNeeded];
+    [self refreshDiagnosticsOverlay];
 }
 
 - (void)layout {
     [super layout];
-    [self updateMetalLayerDrawableSize];
     [self layoutMetalStatusLayer];
+    if (!self.metalLayer && self.layer) {
+        self.layer.frame = self.bounds;
+        [self updateLayerBlurFilter];
+    }
 }
 
 - (void)rebuildEmitters {
@@ -171,59 +204,56 @@ typedef struct {
     }
 }
 
-- (void)animateOneFrame {
-    [self ensureMetalDevice];
-    [self ensureMetalLayer];
-    [self ensureMetalRenderer];
-    [self updateMetalLayerDrawableSize];
-
-    NSTimeInterval dt = [self advanceAnimationClock];
-    if (dt <= 0.0) { dt = 1.0 / 60.0; }
-
-    [self updateEmittersWithDelta:dt];
-
+- (void)stepSimulationWithDeltaTime:(NSTimeInterval)dt {
+    NSTimeInterval clamped = (dt <= 0.0) ? (1.0 / MAX(self.targetFramesPerSecond, 1)) : dt;
+    [self updateEmittersWithDelta:clamped];
     self.particleSystem.blendMode = self.additiveBlend ? SSKParticleBlendModeAdditive : SSKParticleBlendModeAlpha;
-    [self.particleSystem advanceBy:dt];
+    [self.particleSystem advanceBy:clamped];
+}
 
-    BOOL renderedWithMetal = NO;
-    self.awaitingMetalDrawable = NO;
+- (void)renderMetalFrame:(SSKMetalRenderer *)renderer deltaTime:(NSTimeInterval)dt {
+    [self stepSimulationWithDeltaTime:dt];
 
-    if (self.metalRenderer && self.metalLayer) {
-        renderedWithMetal = [self.particleSystem renderWithMetalRenderer:self.metalRenderer
-                                                               blendMode:(self.additiveBlend ? SSKParticleBlendModeAdditive : SSKParticleBlendModeAlpha)
-                                                            viewportSize:self.bounds.size];
-        if (renderedWithMetal) {
-            self.metalRenderingActive = YES;
-            self.metalSuccessCount += 1;
-            self.metalFailureCount = 0;
-            self.metalStatusText = [NSString stringWithFormat:@"Metal: active (successes %lu)",
-                                    (unsigned long)self.metalSuccessCount];
-        } else {
-            self.awaitingMetalDrawable = YES;
-            self.metalRenderingActive = NO;
-            self.metalFailureCount += 1;
-            self.metalStatusText = [NSString stringWithFormat:@"Metal: waiting for drawable (failures %lu)",
-                                    (unsigned long)self.metalFailureCount];
-        }
-    } else if (!self.metalDevice) {
-        self.metalRenderingActive = NO;
-        self.metalStatusText = @"Metal: device unavailable";
-    } else if (!self.metalLayer) {
-        self.metalRenderingActive = NO;
-        self.metalStatusText = @"Metal: layer unavailable";
+    renderer.clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
+    renderer.particleBlurRadius = MAX(0.0, self.blurRadius);
+    NSArray<SSKParticle *> *particles = [self.particleSystem aliveParticlesSnapshot];
+    [renderer drawParticles:particles
+                  blendMode:self.particleSystem.blendMode
+               viewportSize:self.bounds.size];
+
+    self.metalRenderingActive = YES;
+    self.metalSuccessCount += 1;
+    self.metalFailureCount = 0;
+    if (self.blurRadius > 0.01) {
+        self.metalStatusText = [NSString stringWithFormat:@"Metal: active (blur %.1f, successes %lu)",
+                                self.blurRadius,
+                                (unsigned long)self.metalSuccessCount];
     } else {
-        self.metalRenderingActive = NO;
-        NSString *error = [SSKMetalParticleRenderer lastCreationErrorMessage];
-        self.metalStatusText = error.length ? [NSString stringWithFormat:@"Metal: renderer unavailable (%@)", error] :
-                                              @"Metal: renderer unavailable";
+        self.metalStatusText = [NSString stringWithFormat:@"Metal: active (successes %lu)",
+                                (unsigned long)self.metalSuccessCount];
     }
+    [self refreshDiagnosticsOverlay];
+}
 
-    BOOL previousMetalEnabled = self.metalEnabled;
-    self.metalEnabled = (self.metalRenderer != nil);
-    if (previousMetalEnabled != self.metalEnabled) {
-        [self configureParticleRenderHandler];
+- (void)renderCPUFrameWithDeltaTime:(NSTimeInterval)dt {
+    [self stepSimulationWithDeltaTime:dt];
+
+    self.metalRenderingActive = NO;
+    if (self.useMetalPipeline) {
+        self.metalFailureCount += 1;
+        self.metalStatusText = self.metalAvailable ?
+            [NSString stringWithFormat:@"Metal: fallback (failures %lu)", (unsigned long)self.metalFailureCount] :
+            @"Metal: unavailable";
+    } else {
+        self.metalStatusText = @"Metal: disabled";
     }
+    [self refreshDiagnosticsOverlay];
+    [self ensureFallbackLayer];
+    [self updateLayerBlurFilter];
+    [self setNeedsDisplay:YES];
+}
 
+- (void)refreshDiagnosticsOverlay {
     if (self.diagnosticsEnabled) {
         [self ensureMetalStatusLayer];
         [self layoutMetalStatusLayer];
@@ -231,19 +261,18 @@ typedef struct {
     } else if (self.metalStatusLayer) {
         self.metalStatusLayer.hidden = YES;
     }
-
-    if (!renderedWithMetal) {
-        [self setNeedsDisplay:YES];
-    }
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
     if (self.metalRenderingActive && self.metalRenderer) { return; }
-    [[NSColor blackColor] setFill];
-    NSRectFill(dirtyRect);
+    [self ensureFallbackLayer];
+    [self updateLayerBlurFilter];
 
     CGContextRef ctx = [[NSGraphicsContext currentContext] CGContext];
     if (!ctx) { return; }
+
+    [[NSColor blackColor] setFill];
+    NSRectFill(dirtyRect);
 
     [self.particleSystem drawInContext:ctx];
 
@@ -351,7 +380,8 @@ typedef struct {
         srgb = [NSColor colorWithHue:hue saturation:saturation brightness:brightness alpha:1.0];
     }
 
-    CGFloat baseAlpha = self.additiveBlend ? 0.22 : 0.72;
+    CGFloat alphaScale = self.additiveBlend ? 0.4 : 1.0;
+    CGFloat baseAlpha = MIN(1.0, MAX(0.02, self.trailOpacity) * alphaScale);
     NSColor *color = [srgb colorWithAlphaComponent:baseAlpha];
 
     particle.position = emitter->position;
@@ -362,7 +392,7 @@ typedef struct {
         CGFloat sizeBase = self.trailWidth * (7.5 + ((CGFloat)arc4random() / UINT32_MAX) * 3.5);
         particle.size = sizeBase;
         particle.baseSize = sizeBase;
-        particle.userScalar = self.softEdgesEnabled ? 4.5 : 0.0;
+        particle.userScalar = self.softEdgesEnabled ? 6.0 : 0.0;
         particle.userVector = unitDir;
         particle.sizeOverLifeRange = SSKScalarRangeMake(1.0, 0.35);
         particle.behaviorOptions = (SSKParticleBehaviorOptionFadeAlpha | SSKParticleBehaviorOptionFadeSize);
@@ -398,6 +428,8 @@ typedef struct {
         NSColor *core = [color colorWithAlphaComponent:alpha];
 
         if (weakSelf.softEdgesEnabled) {
+            CGContextSaveGState(ctx);
+            CGContextSetBlendMode(ctx, weakSelf.additiveBlend ? kCGBlendModePlusLighter : kCGBlendModeNormal);
             NSColor *startColor = [core colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]] ?: core;
             CGFloat startComponents[4] = {startColor.redComponent, startColor.greenComponent, startColor.blueComponent, startColor.alphaComponent};
             CGFloat midComponents[4] = {startComponents[0], startComponents[1], startComponents[2], startComponents[3] * 0.45f};
@@ -412,7 +444,6 @@ typedef struct {
             if (space) {
                 CGGradientRef gradient = CGGradientCreateWithColorComponents(space, components, locations, 3);
                 if (gradient) {
-                    CGContextSaveGState(ctx);
                     CGContextTranslateCTM(ctx, particle.position.x, particle.position.y);
                     CGContextRotateCTM(ctx, angle);
                     CGContextScaleCTM(ctx, length * 0.5, width * 0.5);
@@ -423,16 +454,17 @@ typedef struct {
                                                 CGPointZero,
                                                 1.0,
                                                 kCGGradientDrawsAfterEndLocation);
-                    CGContextRestoreGState(ctx);
                     CGGradientRelease(gradient);
                 }
                 CGColorSpaceRelease(space);
             }
+            CGContextRestoreGState(ctx);
             return;
         }
 
         CGColorRef glow = CGColorCreateCopyWithAlpha(core.CGColor, alpha * 0.75);
         CGContextSaveGState(ctx);
+        CGContextSetBlendMode(ctx, weakSelf.additiveBlend ? kCGBlendModePlusLighter : kCGBlendModeNormal);
         CGContextTranslateCTM(ctx, particle.position.x, particle.position.y);
         CGContextRotateCTM(ctx, angle);
         if (glow) {
@@ -453,87 +485,23 @@ typedef struct {
     };
 }
 
-- (void)updateMetalSupportIfNeeded {
-    [self ensureMetalDevice];
-    [self ensureMetalLayer];
-    [self ensureMetalRenderer];
-    if (self.metalLayer && self.layer != self.metalLayer) {
-        self.layer = self.metalLayer;
+- (void)ensureFallbackLayer {
+    if (self.metalLayer) { return; }
+    if (!self.layer) {
+        self.wantsLayer = YES;
+        CALayer *layer = [CALayer layer];
+        layer.backgroundColor = NSColor.blackColor.CGColor;
+        CGFloat scale = 1.0;
+        if (self.window) {
+            scale = self.window.backingScaleFactor;
+        } else if (NSScreen.mainScreen) {
+            scale = NSScreen.mainScreen.backingScaleFactor;
+        }
+        layer.contentsScale = scale;
+        layer.frame = self.bounds;
+        self.layer = layer;
     }
-    [self updateMetalLayerDrawableSize];
-}
-
-- (void)updateMetalLayerDrawableSize {
-    if (!self.metalLayer) { return; }
-    CGFloat scale = 1.0;
-    if (self.window) {
-        scale = self.window.backingScaleFactor;
-    } else if (NSScreen.mainScreen) {
-        scale = NSScreen.mainScreen.backingScaleFactor;
-    }
-    self.metalLayer.contentsScale = scale;
-    self.metalLayer.frame = self.bounds;
-    self.metalLayer.drawableSize = CGSizeMake(self.bounds.size.width * scale,
-                                              self.bounds.size.height * scale);
-}
-
-- (void)ensureMetalDevice {
-    if (self.metalDevice) { return; }
-    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-    if (!device) {
-        self.metalEnabled = NO;
-        self.metalStatusText = @"Metal: device unavailable";
-        return;
-    }
-    self.metalDevice = device;
-    self.metalStatusText = [NSString stringWithFormat:@"Metal: device %@", device.name];
-}
-
-- (void)ensureMetalLayer {
-    if (self.metalLayer || !self.metalDevice) { return; }
-    if (!self.window) {
-        self.metalStatusText = @"Metal: waiting for window";
-        return;
-    }
-
-    self.wantsLayer = YES;
-    CAMetalLayer *layer = [CAMetalLayer layer];
-    layer.device = self.metalDevice;
-    layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
-    layer.framebufferOnly = YES;
-    layer.opaque = YES;
-    layer.needsDisplayOnBoundsChange = YES;
-    layer.backgroundColor = NSColor.blackColor.CGColor;
-    if ([layer respondsToSelector:@selector(setPresentsWithTransaction:)]) {
-        layer.presentsWithTransaction = NO;
-    }
-#if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 101300
-    if (@available(macOS 10.13, *)) {
-        layer.displaySyncEnabled = YES;
-    }
-#endif
-    self.layer = layer;
-    if ([self respondsToSelector:@selector(setLayerContentsRedrawPolicy:)]) {
-        self.layerContentsRedrawPolicy = NSViewLayerContentsRedrawNever;
-    }
-    self.metalLayer = layer;
-    self.metalStatusText = @"Metal: layer attached";
-    [self ensureMetalStatusLayer];
-}
-
-- (void)ensureMetalRenderer {
-    if (!self.metalLayer || self.metalRenderer) { return; }
-    SSKMetalParticleRenderer *renderer = [[SSKMetalParticleRenderer alloc] initWithLayer:self.metalLayer];
-    if (!renderer) {
-        NSString *error = [SSKMetalParticleRenderer lastCreationErrorMessage];
-        self.metalEnabled = NO;
-        self.metalStatusText = error.length ? [NSString stringWithFormat:@"Metal: renderer init failed (%@)", error] :
-                                              @"Metal: renderer init failed";
-        return;
-    }
-    self.metalRenderer = renderer;
-    self.metalEnabled = YES;
-    self.metalStatusText = @"Metal: renderer initialised";
+    [self updateLayerBlurFilter];
 }
 
 - (void)ensureMetalStatusLayer {
@@ -602,6 +570,18 @@ typedef struct {
                                     metrics];
 }
 
+- (void)updateLayerBlurFilter {
+    CGFloat radius = MAX(0.0, self.blurRadius);
+    if (self.metalLayer) {
+        [SSKLayerEffects applyGaussianBlurWithRadius:0.0 toLayer:self.metalLayer];
+    }
+    if (self.layer && self.layer != self.metalLayer) {
+        [SSKLayerEffects applyGaussianBlurWithRadius:radius toLayer:self.layer];
+    }
+}
+
+// Placeholder methods removed - blur handled via layer filters now.
+
 - (BOOL)hasConfigureSheet {
     return YES;
 }
@@ -655,6 +635,20 @@ typedef struct {
     NSButton *softEdgesToggle = [NSButton checkboxWithTitle:@"Use soft-edged trails" target:nil action:nil];
     [binder bindCheckbox:softEdgesToggle key:kPrefSoftEdges];
     [stack addArrangedSubview:softEdgesToggle];
+
+    [stack addArrangedSubview:[self sliderRowWithTitle:@"Trail Opacity"
+                                             minValue:0.1
+                                             maxValue:1.0
+                                                  key:kPrefTrailOpacity
+                                               format:@"%.2f"
+                                                binder:binder]];
+
+    [stack addArrangedSubview:[self sliderRowWithTitle:@"Blur Radius"
+                                             minValue:0.0
+                                             maxValue:8.0
+                                                  key:kPrefBlurRadius
+                                               format:@"%.1f"
+                                                binder:binder]];
 
     NSTextField *fpsLabel = [NSTextField labelWithString:@"Frame Rate"];
     fpsLabel.font = [NSFont systemFontOfSize:12 weight:NSFontWeightRegular];
@@ -777,6 +771,11 @@ typedef struct {
         [defaults[kPrefTrailWidth] doubleValue];
     self.trailWidth = MAX(0.1, width);
 
+    double blur = [preferences[kPrefBlurRadius] respondsToSelector:@selector(doubleValue)] ?
+        [preferences[kPrefBlurRadius] doubleValue] :
+        [defaults[kPrefBlurRadius] doubleValue];
+    self.blurRadius = MAX(0.0, blur);
+
     NSString *paletteValue = [preferences[kPrefPalette] isKindOfClass:[NSString class]] ?
         preferences[kPrefPalette] : defaults[kPrefPalette];
     if (![paletteValue isKindOfClass:[NSString class]] || paletteValue.length == 0) {
@@ -799,6 +798,11 @@ typedef struct {
         [preferences[kPrefSoftEdges] boolValue] :
         [defaults[kPrefSoftEdges] boolValue];
     self.softEdgesEnabled = softEdges;
+
+    double opacityValue = [preferences[kPrefTrailOpacity] respondsToSelector:@selector(doubleValue)] ?
+        [preferences[kPrefTrailOpacity] doubleValue] :
+        [defaults[kPrefTrailOpacity] doubleValue];
+    self.trailOpacity = MAX(0.05, MIN(1.0, opacityValue));
 
     NSString *frameRateString = nil;
     id frameRateValue = preferences[kPrefFrameRate];
@@ -823,6 +827,7 @@ typedef struct {
     }
 
     [self configureParticleRenderHandler];
+    [self updateLayerBlurFilter];
 }
 
 @end

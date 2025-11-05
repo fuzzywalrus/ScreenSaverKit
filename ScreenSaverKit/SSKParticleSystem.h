@@ -92,6 +92,9 @@ typedef void (^SSKParticleRenderer)(CGContextRef ctx, SSKParticle *particle);
 /// Renders the particles into `ctx`. Call within `drawRect:` after configuring transforms.
 - (void)drawInContext:(CGContextRef)ctx;
 
+/// Returns a snapshot of all alive particles for external rendering.
+- (NSArray<SSKParticle *> *)aliveParticlesSnapshot;
+
 /// Convenience helper that pushes particle data through a Metal-backed renderer.
 - (BOOL)renderWithMetalRenderer:(SSKMetalParticleRenderer *)renderer
                        blendMode:(SSKParticleBlendMode)blendMode

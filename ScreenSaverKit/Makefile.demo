@@ -13,12 +13,20 @@ CONTENTS_DIR := $(BUNDLE_DIR)/Contents
 MACOS_DIR := $(CONTENTS_DIR)/MacOS
 RESOURCES_DIR := $(CONTENTS_DIR)/Resources
 MODULE_CACHE_DIR := $(BUILD_DIR)/ModuleCache
+SHADER_BUILD_DIR := $(BUILD_DIR)/Shaders
 
 CC := clang
 CFLAGS := -Wall -Wextra -O2 -fobjc-arc -fmodules -arch arm64 -arch x86_64 \
 	-fmodules-cache-path=$(MODULE_CACHE_DIR)
 LDFLAGS := -Wl,-dead_strip
 FRAMEWORKS := -framework Cocoa -framework ScreenSaver -framework QuartzCore -framework Metal
+METALC := xcrun -sdk macosx metal -fmodules-cache-path=$(MODULE_CACHE_DIR)
+METALLIB := xcrun -sdk macosx metallib
+
+SHADER_DIR := $(KIT_DIR)/ScreenSaverKit/Shaders
+SHADER_SOURCES := $(SHADER_DIR)/SSKParticleShaders.metal
+SHADER_AIRS := $(SHADER_BUILD_DIR)/SSKParticleShaders.air
+SHADER_METALLIB := $(RESOURCES_DIR)/SSKParticleShaders.metallib
 
 # Add your own source files here. Keep SSKScreenSaverView.m in the list.
 SOURCES := \
@@ -35,16 +43,22 @@ SOURCES := \
 	SSKPaletteManager.m \
 	SSKColorUtilities.m \
 	SSKParticleSystem.m \
-	SSKMetalParticleRenderer.m
+	SSKMetalParticleRenderer.m \
+	SSKMetalRenderer.m \
+	SSKMetalScreenSaverView.m \
+	SSKMetalTextureCache.m \
+	SSKMetalPass.m \
+	SSKMetalParticlePass.m \
+	SSKLayerEffects.m
 
 INFO_PLIST ?= $(KIT_DIR)/TemplateInfo.plist
 EXECUTABLE := $(MACOS_DIR)/$(SCREENSAVER_NAME)
 
 .PHONY: all clean run
 
-all: $(EXECUTABLE)
+all: $(EXECUTABLE) $(SHADER_METALLIB)
 
-$(EXECUTABLE): $(addprefix $(KIT_DIR)/,$(SOURCES)) $(CONTENTS_DIR)/Info.plist | $(MACOS_DIR)
+$(EXECUTABLE): $(addprefix $(KIT_DIR)/,$(SOURCES)) $(CONTENTS_DIR)/Info.plist $(SHADER_METALLIB) | $(MACOS_DIR)
 	@mkdir -p $(MODULE_CACHE_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) $(FRAMEWORKS) -bundle \
 		-o $@ $(addprefix $(KIT_DIR)/,$(SOURCES))
@@ -58,6 +72,16 @@ $(CONTENTS_DIR)/Info.plist: $(INFO_PLIST) | $(MACOS_DIR)
 $(MACOS_DIR):
 	@mkdir -p $(MACOS_DIR)
 	@mkdir -p $(RESOURCES_DIR)
+
+$(SHADER_BUILD_DIR):
+	@mkdir -p $(SHADER_BUILD_DIR)
+
+$(SHADER_BUILD_DIR)/%.air: $(SHADER_DIR)/%.metal | $(SHADER_BUILD_DIR)
+	@mkdir -p $(MODULE_CACHE_DIR)
+	$(METALC) -c $< -o $@
+
+$(RESOURCES_DIR)/%.metallib: $(SHADER_BUILD_DIR)/%.air | $(MACOS_DIR)
+	$(METALLIB) $< -o $@
 
 clean:
 	rm -rf "$(BUILD_DIR)"

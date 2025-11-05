@@ -1,0 +1,216 @@
+#import "SSKMetalRenderer.h"
+
+#import "SSKMetalTextureCache.h"
+#import "SSKParticleSystem.h"
+#import "SSKDiagnostics.h"
+#import "SSKMetalParticlePass.h"
+
+@interface SSKMetalRenderer ()
+@property (nonatomic, weak) CAMetalLayer *layer;
+@property (nonatomic, strong, readwrite) id<MTLDevice> device;
+@property (nonatomic, strong) id<MTLCommandQueue> commandQueue;
+@property (nonatomic, strong, readwrite, nullable) id<MTLCommandBuffer> currentCommandBuffer;
+@property (nonatomic, strong, nullable) id<CAMetalDrawable> currentDrawable;
+@property (nonatomic, strong) id<MTLTexture> overrideRenderTarget;
+@property (nonatomic, strong, readwrite) SSKMetalTextureCache *textureCache;
+@property (nonatomic, readwrite) CGSize drawableSize;
+@property (nonatomic, strong) id<MTLLibrary> shaderLibrary;
+@property (nonatomic, strong) SSKMetalParticlePass *particlePass;
+@property (nonatomic) BOOL needsClearOnNextPass;
+@end
+
+@implementation SSKMetalRenderer
+
+- (instancetype)initWithLayer:(CAMetalLayer *)layer {
+    NSParameterAssert(layer);
+    if ((self = [super init])) {
+        _layer = layer;
+        id<MTLDevice> device = layer.device ?: MTLCreateSystemDefaultDevice();
+        if (!device) {
+            [SSKDiagnostics log:@"SSKMetalRenderer: no Metal device available during initialisation."];
+            return nil;
+        }
+        _device = device;
+        if (!layer.device) {
+            layer.device = device;
+        }
+        layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+        layer.framebufferOnly = NO;
+        _commandQueue = [device newCommandQueue];
+        if (!_commandQueue) {
+            [SSKDiagnostics log:@"SSKMetalRenderer: failed to create command queue."];
+            return nil;
+        }
+        _clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
+        _textureCache = [[SSKMetalTextureCache alloc] initWithDevice:device];
+
+        _shaderLibrary = [self loadDefaultLibraryWithDevice:device];
+        if (!_shaderLibrary) {
+            [SSKDiagnostics log:@"SSKMetalRenderer: failed to load shader library (SSKParticleShaders.metallib)."];
+            return nil;
+        }
+
+        _particlePass = [SSKMetalParticlePass new];
+        if (![_particlePass setupWithDevice:device library:_shaderLibrary]) {
+            [SSKDiagnostics log:@"SSKMetalRenderer: failed to set up particle pass."];
+            return nil;
+        }
+        _particleBlurRadius = 0.0;
+        _needsClearOnNextPass = YES;
+    }
+    return self;
+}
+
+- (BOOL)beginFrame {
+    if (!self.layer || !self.commandQueue) {
+        return NO;
+    }
+    if (!self.layer.device) {
+        self.layer.device = self.device;
+    }
+
+    self.currentCommandBuffer = [self.commandQueue commandBuffer];
+    if (!self.currentCommandBuffer) {
+        [SSKDiagnostics log:@"SSKMetalRenderer: failed to create command buffer."];
+        return NO;
+    }
+
+    self.currentDrawable = [self.layer nextDrawable];
+    if (!self.currentDrawable) {
+        self.currentCommandBuffer = nil;
+        return NO;
+    }
+
+    id<MTLTexture> texture = self.currentDrawable.texture;
+    if (texture) {
+        self.drawableSize = CGSizeMake(texture.width, texture.height);
+    } else {
+        self.drawableSize = CGSizeZero;
+    }
+    self.overrideRenderTarget = nil;
+    self.needsClearOnNextPass = YES;
+    return YES;
+}
+
+- (void)endFrame {
+    if (!self.currentCommandBuffer) {
+        self.currentDrawable = nil;
+        self.overrideRenderTarget = nil;
+        return;
+    }
+
+    if (self.currentDrawable) {
+        [self.currentCommandBuffer presentDrawable:self.currentDrawable];
+    }
+    [self.currentCommandBuffer commit];
+    self.currentCommandBuffer = nil;
+    self.currentDrawable = nil;
+    self.overrideRenderTarget = nil;
+    self.needsClearOnNextPass = YES;
+}
+
+- (void)clearWithColor:(MTLClearColor)color {
+    self.clearColor = color;
+    id<MTLCommandBuffer> commandBuffer = self.currentCommandBuffer;
+    id<MTLTexture> target = [self activeRenderTarget];
+    if (!commandBuffer || !target) {
+        return;
+    }
+
+    MTLRenderPassDescriptor *descriptor = [MTLRenderPassDescriptor renderPassDescriptor];
+    descriptor.colorAttachments[0].texture = target;
+    descriptor.colorAttachments[0].loadAction = MTLLoadActionClear;
+    descriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
+    descriptor.colorAttachments[0].clearColor = color;
+
+    id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:descriptor];
+    [encoder endEncoding];
+    self.needsClearOnNextPass = NO;
+}
+
+- (void)drawParticles:(NSArray<SSKParticle *> *)particles
+            blendMode:(SSKParticleBlendMode)blendMode
+         viewportSize:(CGSize)viewportSize {
+    if (!self.particlePass) { return; }
+    id<MTLCommandBuffer> commandBuffer = self.currentCommandBuffer;
+    id<MTLTexture> target = [self activeRenderTarget];
+    if (!commandBuffer || !target) { return; }
+
+    self.particlePass.blurRadius = MAX(0.0, self.particleBlurRadius);
+    NSArray<SSKParticle *> *liveParticles = particles ?: @[];
+    MTLLoadAction loadAction = self.needsClearOnNextPass ? MTLLoadActionClear : MTLLoadActionLoad;
+    BOOL success = [self.particlePass encodeParticles:liveParticles
+                                            blendMode:blendMode
+                                         viewportSize:viewportSize
+                                        commandBuffer:commandBuffer
+                                         renderTarget:target
+                                           loadAction:loadAction
+                                           clearColor:self.clearColor];
+    if (!success && [SSKDiagnostics isEnabled]) {
+        [SSKDiagnostics log:@"SSKMetalRenderer: particle pass failed to encode."];
+    }
+    self.needsClearOnNextPass = NO;
+}
+
+- (void)drawTexture:(id<MTLTexture>)texture atRect:(CGRect)rect {
+    (void)texture;
+    (void)rect;
+    if ([SSKDiagnostics isEnabled]) {
+        [SSKDiagnostics log:@"SSKMetalRenderer: drawTexture:atRect: invoked but not yet implemented."];
+    }
+}
+
+- (void)applyBlur:(CGFloat)radius {
+    (void)radius;
+    if ([SSKDiagnostics isEnabled]) {
+        [SSKDiagnostics log:@"SSKMetalRenderer: applyBlur: invoked but not yet implemented."];
+    }
+}
+
+- (void)applyBloom:(CGFloat)intensity {
+    (void)intensity;
+    if ([SSKDiagnostics isEnabled]) {
+        [SSKDiagnostics log:@"SSKMetalRenderer: applyBloom: invoked but not yet implemented."];
+    }
+}
+
+- (void)applyColorGrading:(id)params {
+    (void)params;
+    if ([SSKDiagnostics isEnabled]) {
+        [SSKDiagnostics log:@"SSKMetalRenderer: applyColorGrading: invoked but not yet implemented."];
+    }
+}
+
+- (void)setRenderTarget:(id<MTLTexture>)texture {
+    self.overrideRenderTarget = texture;
+}
+
+#pragma mark - Helpers
+
+- (nullable id<MTLLibrary>)loadDefaultLibraryWithDevice:(id<MTLDevice>)device {
+    NSBundle *bundle = [NSBundle bundleForClass:self.class];
+    NSString *metallibPath = [bundle pathForResource:@"SSKParticleShaders" ofType:@"metallib"];
+    NSError *error = nil;
+    if (metallibPath.length > 0) {
+        NSURL *metallibURL = [NSURL fileURLWithPath:metallibPath];
+        id<MTLLibrary> library = [device newLibraryWithURL:metallibURL error:&error];
+        if (library) {
+            return library;
+        }
+        if ([SSKDiagnostics isEnabled]) {
+            [SSKDiagnostics log:@"SSKMetalRenderer: failed to load metallib at %@ (%@).", metallibPath, error.localizedDescription ?: @"unknown error"];
+        }
+    } else if ([SSKDiagnostics isEnabled]) {
+        [SSKDiagnostics log:@"SSKMetalRenderer: SSKParticleShaders.metallib missing from bundle resources."];
+    }
+    return nil;
+}
+
+- (id<MTLTexture>)activeRenderTarget {
+    if (self.overrideRenderTarget) {
+        return self.overrideRenderTarget;
+    }
+    return self.currentDrawable.texture;
+}
+
+@end
