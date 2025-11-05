@@ -139,7 +139,9 @@ kernel void bloomCompositeKernel(texture2d<float, access::sample> bloomTex [[tex
     constexpr sampler s(address::clamp_to_edge, filter::nearest);
     float4 bloom = bloomTex.sample(s, (float2(gid) + 0.5f) / float2(bloomTex.get_width(), bloomTex.get_height()));
     float4 dest = destination.read(gid);
-    float3 added = bloom.rgb * intensity;
-    dest.rgb = clamp(dest.rgb + added, float3(0.0f), float3(1.0f));
+    float glow = bloom.a * intensity;
+    if (glow > 0.0001f) {
+        dest.rgb = clamp(dest.rgb + bloom.rgb * glow, float3(0.0f), float3(1.0f));
+    }
     destination.write(dest, gid);
 }

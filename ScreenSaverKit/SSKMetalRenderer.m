@@ -67,7 +67,7 @@
             _blurPass = nil;
         }
         _bloomPass = [[SSKMetalBloomPass alloc] init];
-        if (![_bloomPass setupWithDevice:device library:_shaderLibrary]) {
+        if (![_bloomPass setupWithDevice:device library:_shaderLibrary blurPass:_blurPass]) {
             if ([SSKDiagnostics isEnabled]) {
                 [SSKDiagnostics log:@"SSKMetalRenderer: bloom pass unavailable (continuing without bloom support)."];
             }
@@ -95,18 +95,8 @@
         return NO;
     }
 
-    self.currentDrawable = [self.layer nextDrawable];
-    if (!self.currentDrawable) {
-        self.currentCommandBuffer = nil;
-        return NO;
-    }
-
-    id<MTLTexture> texture = self.currentDrawable.texture;
-    if (texture) {
-        self.drawableSize = CGSizeMake(texture.width, texture.height);
-    } else {
-        self.drawableSize = CGSizeZero;
-    }
+    self.currentDrawable = nil;
+    self.drawableSize = CGSizeZero;
     self.overrideRenderTarget = nil;
     self.needsClearOnNextPass = YES;
     return YES;
@@ -182,7 +172,13 @@
 - (void)applyBlur:(CGFloat)radius {
     CGFloat clamped = MAX(0.0, radius);
     self.particleBlurRadius = clamped;
-    if (clamped <= 0.01f || !self.blurPass) {
+    if (clamped <= 0.01f) {
+        return;
+    }
+    if (!self.blurPass) {
+        if ([SSKDiagnostics isEnabled]) {
+            [SSKDiagnostics log:@"SSKMetalRenderer: blur pass unavailable – skipping blur."];
+        }
         return;
     }
 
@@ -192,38 +188,11 @@
         return;
     }
 
-    MTLTextureUsage usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite | MTLTextureUsageRenderTarget;
-    id<MTLTexture> intermediate = [self.textureCache acquireTextureMatchingTexture:target usage:usage];
-    if (!intermediate) {
-        if ([SSKDiagnostics isEnabled]) {
-            [SSKDiagnostics log:@"SSKMetalRenderer: failed to acquire blur intermediate texture."];
-        }
-        return;
-    }
-
-    id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
-    if (!blit) {
-        [self.textureCache releaseTexture:intermediate];
-        return;
-    }
-    MTLOrigin origin = {0, 0, 0};
-    MTLSize size = {target.width, target.height, 1};
-    [blit copyFromTexture:target
-             sourceSlice:0
-             sourceLevel:0
-            sourceOrigin:origin
-              sourceSize:size
-               toTexture:intermediate
-        destinationSlice:0
-        destinationLevel:0
-       destinationOrigin:origin];
-    [blit endEncoding];
-
     self.blurPass.radius = clamped;
-    BOOL success = [self.blurPass encodeBlur:intermediate
+    BOOL success = [self.blurPass encodeBlur:target
                                   destination:target
-                                commandBuffer:commandBuffer];
-    [self.textureCache releaseTexture:intermediate];
+                                commandBuffer:commandBuffer
+                                 textureCache:self.textureCache];
     if (!success && [SSKDiagnostics isEnabled]) {
         [SSKDiagnostics log:@"SSKMetalRenderer: blur pass failed to encode."];
     }
@@ -231,7 +200,13 @@
 
 - (void)applyBloom:(CGFloat)intensity {
     CGFloat clamped = MAX(0.0, intensity);
-    if (clamped <= 0.01f || !self.bloomPass) {
+    if (clamped <= 0.01f) {
+        return;
+    }
+    if (!self.bloomPass) {
+        if ([SSKDiagnostics isEnabled]) {
+            [SSKDiagnostics log:@"SSKMetalRenderer: bloom pass unavailable – skipping bloom."];
+        }
         return;
     }
 
@@ -246,7 +221,8 @@
     self.bloomPass.blurSigma = MAX(0.1, self.bloomBlurSigma);
     BOOL success = [self.bloomPass encodeBloomWithCommandBuffer:commandBuffer
                                                          source:target
-                                                   renderTarget:target];
+                                                   renderTarget:target
+                                                   textureCache:self.textureCache];
     if (!success && [SSKDiagnostics isEnabled]) {
         [SSKDiagnostics log:@"SSKMetalRenderer: bloom pass failed to encode."];
     }
@@ -288,7 +264,29 @@
     if (self.overrideRenderTarget) {
         return self.overrideRenderTarget;
     }
-    return self.currentDrawable.texture;
+    id<CAMetalDrawable> drawable = [self ensureCurrentDrawable];
+    return drawable.texture;
+}
+
+- (id<CAMetalDrawable>)ensureCurrentDrawable {
+    if (self.currentDrawable) {
+        return self.currentDrawable;
+    }
+    if (!self.layer) {
+        return nil;
+    }
+    id<CAMetalDrawable> drawable = [self.layer nextDrawable];
+    if (!drawable) {
+        return nil;
+    }
+    self.currentDrawable = drawable;
+    id<MTLTexture> texture = drawable.texture;
+    if (texture) {
+        self.drawableSize = CGSizeMake(texture.width, texture.height);
+    } else {
+        self.drawableSize = CGSizeZero;
+    }
+    return drawable;
 }
 
 @end

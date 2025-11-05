@@ -4,6 +4,8 @@
 
 There's plenty of demo savers included to illustrate how to use the various features, plus a complete tutorial in [tutorial.md](tutorial.md) that walks you through building your first saver from scratch.
 
+Currently this is in alpha development, so expect possible breaking changes in future releases. Feedback and contributions are welcome!
+
 ![Hello World Demo](documentation-src/hello-world.gif)
 
 ## What you get

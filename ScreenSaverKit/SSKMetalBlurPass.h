@@ -1,5 +1,7 @@
 #import "SSKMetalPass.h"
 
+@class SSKMetalTextureCache;
+
 NS_ASSUME_NONNULL_BEGIN
 
 /// Compute-based Gaussian blur pass that can be reused across renderers.
@@ -14,7 +16,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// Encodes a blur from `source` into `destination`. Returns NO on failure.
 - (BOOL)encodeBlur:(id<MTLTexture>)source
         destination:(id<MTLTexture>)destination
-      commandBuffer:(id<MTLCommandBuffer>)commandBuffer;
+      commandBuffer:(id<MTLCommandBuffer>)commandBuffer
+       textureCache:(SSKMetalTextureCache *)textureCache;
 
 @end
 

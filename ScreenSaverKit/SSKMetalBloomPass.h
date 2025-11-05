@@ -1,5 +1,8 @@
 #import "SSKMetalPass.h"
 
+@class SSKMetalBlurPass;
+@class SSKMetalTextureCache;
+
 NS_ASSUME_NONNULL_BEGIN
 
 /// Brightness threshold filter + separable blur used for bloom/glow effects.
@@ -9,11 +12,14 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) CGFloat intensity;
 @property (nonatomic) CGFloat blurSigma;
 
-- (BOOL)setupWithDevice:(id<MTLDevice>)device library:(id<MTLLibrary>)library;
+- (BOOL)setupWithDevice:(id<MTLDevice>)device
+                library:(id<MTLLibrary>)library
+               blurPass:(nullable SSKMetalBlurPass *)blurPass;
 
 - (BOOL)encodeBloomWithCommandBuffer:(id<MTLCommandBuffer>)commandBuffer
                               source:(id<MTLTexture>)source
-                        renderTarget:(id<MTLTexture>)renderTarget;
+                        renderTarget:(id<MTLTexture>)renderTarget
+                        textureCache:(SSKMetalTextureCache *)textureCache;
 
 @end
 

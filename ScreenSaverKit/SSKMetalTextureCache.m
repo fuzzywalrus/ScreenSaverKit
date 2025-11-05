@@ -2,11 +2,21 @@
 
 #import <TargetConditionals.h>
 
+static inline NSNumber *SSKTextureCacheKey(NSUInteger width,
+                                           NSUInteger height,
+                                           MTLPixelFormat format,
+                                           MTLTextureUsage usage) {
+    uint64_t key = ((uint64_t)width << 32) ^
+                   ((uint64_t)height << 16) ^
+                   ((uint64_t)format << 8) ^
+                   (uint64_t)usage;
+    return @(key);
+}
+
 @interface SSKMetalTextureCache ()
 @property (nonatomic, strong) id<MTLDevice> device;
-@property (nonatomic, strong) NSMutableDictionary<NSString *, NSMutableArray<id<MTLTexture>> *> *textureBuckets;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSHashTable<id<MTLTexture>> *> *textureBuckets;
 @property (nonatomic, strong) NSMutableArray<id<MTLTexture>> *allTexturesInInsertionOrder;
-@property (nonatomic, strong) NSLock *lock;
 @end
 
 @implementation SSKMetalTextureCache
@@ -17,7 +27,6 @@
         _device = device;
         _textureBuckets = [NSMutableDictionary dictionary];
         _allTexturesInInsertionOrder = [NSMutableArray array];
-        _lock = [NSLock new];
     }
     return self;
 }
@@ -34,18 +43,15 @@
     width = MAX(width, 1);
     height = MAX(height, 1);
 
-    NSString *key = [self bucketKeyForWidth:width height:height format:pixelFormat usage:usage];
-
-    [self.lock lock];
-    NSMutableArray<id<MTLTexture>> *bucket = self.textureBuckets[key];
-    id<MTLTexture> texture = bucket.lastObject;
+    NSNumber *key = SSKTextureCacheKey(width, height, pixelFormat, usage);
+    NSHashTable<id<MTLTexture>> *bucket = self.textureBuckets[key];
+    id<MTLTexture> texture = bucket.anyObject;
     if (texture) {
-        [bucket removeLastObject];
-        [self.allTexturesInInsertionOrder removeObject:texture];
-    }
-    [self.lock unlock];
-
-    if (texture) {
+        [bucket removeObject:texture];
+        if (bucket.count == 0) {
+            [self.textureBuckets removeObjectForKey:key];
+        }
+        [self.allTexturesInInsertionOrder removeObjectIdenticalTo:texture];
         return texture;
     }
 
@@ -74,35 +80,24 @@
     NSUInteger height = texture.height;
     if (width == 0 || height == 0) { return; }
 
-    NSString *key = [self bucketKeyForWidth:width
-                                     height:height
-                                     format:texture.pixelFormat
-                                      usage:texture.usage];
-
-    [self.lock lock];
-    NSMutableArray<id<MTLTexture>> *bucket = self.textureBuckets[key];
+    NSNumber *key = SSKTextureCacheKey(width, height, texture.pixelFormat, texture.usage);
+    NSHashTable<id<MTLTexture>> *bucket = self.textureBuckets[key];
     if (!bucket) {
-        bucket = [NSMutableArray array];
+        bucket = [NSHashTable hashTableWithOptions:NSPointerFunctionsObjectPointerPersonality];
         self.textureBuckets[key] = bucket;
     }
     [bucket addObject:texture];
     [self.allTexturesInInsertionOrder addObject:texture];
-    [self.lock unlock];
 }
 
 - (void)clearCache {
-    [self.lock lock];
     [self.textureBuckets removeAllObjects];
     [self.allTexturesInInsertionOrder removeAllObjects];
-    [self.lock unlock];
 }
 
 - (void)trimToSize:(NSUInteger)maxCount {
-    [self.lock lock];
     if (maxCount == 0) {
-        [self.textureBuckets removeAllObjects];
-        [self.allTexturesInInsertionOrder removeAllObjects];
-        [self.lock unlock];
+        [self clearCache];
         return;
     }
 
@@ -111,30 +106,13 @@
         [self.allTexturesInInsertionOrder removeObjectAtIndex:0];
         if (!texture) { continue; }
 
-        NSString *key = [self bucketKeyForWidth:texture.width
-                                         height:texture.height
-                                         format:texture.pixelFormat
-                                          usage:texture.usage];
-        NSMutableArray<id<MTLTexture>> *bucket = self.textureBuckets[key];
+        NSNumber *key = SSKTextureCacheKey(texture.width, texture.height, texture.pixelFormat, texture.usage);
+        NSHashTable<id<MTLTexture>> *bucket = self.textureBuckets[key];
         [bucket removeObject:texture];
         if (bucket.count == 0) {
             [self.textureBuckets removeObjectForKey:key];
         }
     }
-    [self.lock unlock];
-}
-
-#pragma mark - Helpers
-
-- (NSString *)bucketKeyForWidth:(NSUInteger)width
-                         height:(NSUInteger)height
-                         format:(MTLPixelFormat)format
-                          usage:(MTLTextureUsage)usage {
-    return [NSString stringWithFormat:@"%lu-%lu-%lu-%lu",
-            (unsigned long)width,
-            (unsigned long)height,
-            (unsigned long)format,
-            (unsigned long)usage];
 }
 
 @end

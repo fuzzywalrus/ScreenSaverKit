@@ -42,6 +42,8 @@ static void SSKMetalParticleRendererSetLastErrorMessage(NSString *message) {
         _bloomBlurSigma = 3.0f;
         _renderer.clearColor = _clearColor;
         _renderer.particleBlurRadius = _blurRadius;
+        _renderer.bloomThreshold = _bloomThreshold;
+        _renderer.bloomBlurSigma = _bloomBlurSigma;
     }
     return self;
 }
@@ -67,10 +69,12 @@ static void SSKMetalParticleRendererSetLastErrorMessage(NSString *message) {
 
 - (void)setBloomThreshold:(CGFloat)bloomThreshold {
     _bloomThreshold = MIN(MAX(bloomThreshold, 0.0), 1.0);
+    self.renderer.bloomThreshold = _bloomThreshold;
 }
 
 - (void)setBloomBlurSigma:(CGFloat)bloomBlurSigma {
     _bloomBlurSigma = MAX(0.1, bloomBlurSigma);
+    self.renderer.bloomBlurSigma = _bloomBlurSigma;
 }
 
 - (BOOL)renderParticles:(NSArray<SSKParticle *> *)particles
