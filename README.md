@@ -12,6 +12,9 @@
 - ✅ Proper animation start/stop handling across preview, WallpaperAgent and ScreenSaverEngine hosts
 - ✅ Asset loading helpers, animation timing utilities, entity pooling, and diagnostics hooks
 - ✅ Pre-built configuration sheet scaffolding with preference binding helpers
+- ✅ Hardware-accelerated particle system with Metal rendering support
+- ✅ Color palette management and interpolation utilities
+- ✅ Vector math helpers for smooth animations
 
 Keeping these concerns in one place lets each screensaver focus on drawing and behaviour instead of boilerplate.
 
@@ -74,12 +77,50 @@ Keeping these concerns in one place lets each screensaver focus on drawing and b
 - `SSKScreenUtilities` – helpers for scaling information, wallpaper-host detection, and screen dimensions.
 - `SSKDiagnostics` – opt-in logging and overlay drawing. Toggle with
   `[SSKDiagnostics setEnabled:YES]` and draw overlays inside `-drawRect:`.
-- `SSKPreferenceBinder` + `SSKConfigurationWindowController` – drop-in UI scaffold for settings windows with automatic binding between controls and`ScreenSaverDefaults`.
+- `SSKPreferenceBinder` + `SSKConfigurationWindowController` – drop-in UI scaffold for settings windows with automatic binding between controls and `ScreenSaverDefaults`.
 - `SSKColorPalette` + `SSKPaletteManager` – shared palette definitions with interpolation helpers and registration per saver module.
 - `SSKColorUtilities` – convenience serializers/deserializers for storing `NSColor` instances inside `ScreenSaverDefaults`.
 - `SSKVectorMath` – small collection of inline NSPoint helpers (add, scale, reflect, clamp) for animation math.
-- `SSKParticleSystem` – lightweight additive/alpha particle engine with optional Metal-accelerated simulation for bloom/glow effects and classic spark trails. See `ScreenSaverKit/SSKParticleSystem.md` for a quick-start and behaviour reference.
-- `SSKMetalParticleRenderer` – optional helper that lets particle systems draw through Metal when a saver provides a `CAMetalLayer`.
+- `SSKParticleSystem` – lightweight particle engine with CPU and Metal-accelerated rendering modes. Supports additive/alpha blending, automatic fade behaviors, and custom per-particle rendering callbacks. Ideal for sparks, trails, explosions, and flowing ribbon effects. See `ScreenSaverKit/SSKParticleSystem.md` for detailed documentation.
+- `SSKMetalParticleRenderer` – hardware-accelerated particle renderer using Metal. Automatically handles GPU pipeline setup, drawable management, and instanced rendering for high-performance particle effects.
+
+## Using Metal-Accelerated Particles
+
+The particle system supports both CPU (Core Graphics) and GPU (Metal) rendering modes:
+
+**Quick Start:**
+```objective-c
+// Create particle system
+self.particleSystem = [[SSKParticleSystem alloc] initWithCapacity:1024];
+self.particleSystem.blendMode = SSKParticleBlendModeAdditive;  // or SSKParticleBlendModeAlpha
+
+// For Metal rendering, set up a CAMetalLayer
+self.wantsLayer = YES;
+CAMetalLayer *metalLayer = [CAMetalLayer layer];
+metalLayer.device = MTLCreateSystemDefaultDevice();
+self.layer = metalLayer;
+self.metalRenderer = [[SSKMetalParticleRenderer alloc] initWithLayer:metalLayer];
+
+// Spawn particles
+[self.particleSystem spawnParticles:100 initializer:^(SSKParticle *particle) {
+    particle.position = center;
+    particle.velocity = NSMakePoint(cos(angle) * speed, sin(angle) * speed);
+    particle.color = [NSColor colorWithHue:hue saturation:0.8 brightness:1.0 alpha:1.0];
+    particle.maxLife = 2.0;
+    particle.size = 10.0;
+    particle.behaviorOptions = SSKParticleBehaviorOptionFadeAlpha | SSKParticleBehaviorOptionFadeSize;
+}];
+
+// In animateOneFrame, update and render
+[self.particleSystem advanceBy:deltaTime];
+[self.particleSystem renderWithMetalRenderer:self.metalRenderer
+                                   blendMode:self.particleSystem.blendMode
+                                viewportSize:self.bounds.size];
+```
+
+**Automatic CPU Fallback:** If Metal initialization fails or the renderer returns `NO`, the particle system automatically falls back to CPU rendering via `drawInContext:` in your `drawRect:` method.
+
+See `Demos/RibbonFlow/` for a complete working example, and `ScreenSaverKit/SSKParticleSystem.md` for detailed API documentation.
 
 ## Starter template
 
@@ -96,9 +137,9 @@ Keeping these concerns in one place lets each screensaver focus on drawing and b
 - `Demos/SimpleLines/` – layered drifting lines with palette selection and adjustable colour cycling speed. Build it via
   `make -f Demos/SimpleLines/Makefile`.
 - `Demos/DVDlogo/` – retro floating DVD logo with solid or rotating palette colour modes, adjustable size, speed, colour cycling, and optional random start behaviour. It also uses a multi-file project structure to demo a more advanced project structure. Build it via  `make -f Demos/DVDlogo/Makefile`.
-- `Demos/RibbonFlow/` – flowing additive ribbons inspired by the classic Apple Flurry screensaver. Build it via `make -f Demos/RibbonFlow/Makefile`.
-- `Demos/MetalParticleTest/` – a minimal particle fountain that flips automatically between Metal and CPU rendering, handy when verifying GPU availability or the bundled Metal particle renderer. Build it via `make -f Demos/MetalParticleTest/Makefile`.
-- `Demos/MetalDiagnostic/` – standalone Metal sanity checker that reports device, layer, drawable, and command-buffer status directly on screen. Build it via `make -f Demos/MetalDiagnostic/Makefile`.
+- `Demos/RibbonFlow/` – flowing additive ribbons inspired by the classic Apple Flurry screensaver. Demonstrates Metal-accelerated particle rendering with the `SSKParticleSystem` and `SSKMetalParticleRenderer` working together for smooth, GPU-powered effects. Build it via `make -f Demos/RibbonFlow/Makefile`.
+- `Demos/MetalParticleTest/` – diagnostic particle fountain with automatic Metal/CPU fallback. Shows real-time rendering statistics, particle counts, and detailed Metal pipeline status. Perfect for testing GPU availability and debugging Metal particle renderer issues. Build it via `make -f Demos/MetalParticleTest/Makefile`.
+- `Demos/MetalDiagnostic/` – low-level Metal sanity checker that displays device capabilities, layer configuration, drawable status, and command buffer lifecycle on-screen. Useful for diagnosing Metal initialization issues or verifying hardware support. Build it via `make -f Demos/MetalDiagnostic/Makefile`.
 - `scripts/install-and-refresh.sh` – convenience script that builds, installs, and restarts the relevant macOS services (`legacyScreenSaver`, `WallpaperAgent`, `ScreenSaverEngine`) so macOS immediately sees your latest bundle. Usage:
 
   ```bash
@@ -107,14 +148,14 @@ Keeping these concerns in one place lets each screensaver focus on drawing and b
   ```
 
   The first argument is the directory containing the saver Makefile; any additional arguments are passed straight through to each `make` invocation.
-- `scripts/refresh-screensaver-services.sh` – lightweight helper that just restarts the caching services (and optionally relaunches `ScreenSaverEngine`) when you already have a bundle installed:
+- `scripts/refresh-screensaver-services.sh` – lightweight helper that clears all macOS screen saver caches and optionally relaunches `ScreenSaverEngine`. Clears: System Settings, `legacyScreenSaver`, `WallpaperAgent`, `ScreenSaverEngine`, `cfprefsd` (preferences daemon), `iconservicesd` (icon cache), and `lsd` (Launch Services). Use when you've already installed a bundle:
 
   ```bash
-  ./scripts/refresh-screensaver-services.sh
-  ./scripts/refresh-screensaver-services.sh --launch
+  ./scripts/refresh-screensaver-services.sh         # clear caches
+  ./scripts/refresh-screensaver-services.sh --launch # clear caches + relaunch preview
   ```
 
-⚠️ **macOS caching note:** System Settings aggressively caches screen saver bundles. If you rebuild but don’t see changes, run the install-and-refresh script or manually quit `legacyScreenSaver`, `WallpaperAgent`, and `ScreenSaverEngine`, then reopen the Screen Saver panel.
+⚠️ **macOS caching note:** System Settings aggressively caches screen saver bundles at multiple levels (preferences, icons, bundle metadata, and Launch Services database). If you rebuild but don't see changes, run the install-and-refresh script which automatically clears all caches, or use the refresh script after manually installing your bundle.
 
 ## Updating the demo savers after kit changes
 
@@ -125,7 +166,7 @@ cd Demos/Starfield && make clean all
 cd Demos/SimpleLines && make clean all
 ```
 
-After installing the refreshed bundle, restart the caching daemons to forc macOS to load the new bits:
+After installing the refreshed bundle, restart the caching daemons to force macOS to load the new bits:
 
 ```bash
 ./scripts/refresh-screensaver-services.sh
@@ -208,3 +249,67 @@ To migrate an older saver code base:
 4. Migrate preference reload code into `-preferencesDidChange:changedKeys:`.
 
 Use these steps to retrofit the kit into existing code and keep the rendering logic focused on your unique saver behavior.
+
+## Troubleshooting
+
+### Metal rendering shows black screen or doesn't activate
+
+**Symptoms:** Metal particle system renders black screen, or always falls back to CPU mode.
+
+**Common causes:**
+1. **Fragment shader not receiving instance data** - Ensure the instance buffer is bound to both vertex AND fragment shaders:
+   ```objc
+   [encoder setVertexBuffer:instanceBuffer offset:0 atIndex:1];
+   [encoder setFragmentBuffer:instanceBuffer offset:0 atIndex:1];  // Don't forget this!
+   ```
+
+2. **Particles spawning "dead"** - Particles must start with `life = 0.0`, not `life = maxLife`:
+   ```objc
+   particle.life = 0.0;          // ✅ Correct - particle starts alive
+   particle.maxLife = 2.0;
+   // NOT: particle.life = particle.maxLife;  // ❌ Particle spawns already dead
+   ```
+
+3. **Layer not attached before renderer initialization** - Wait for view to be in window:
+   ```objc
+   - (void)viewDidMoveToWindow {
+       [super viewDidMoveToWindow];
+       if (self.window) {
+           [self setupMetalRenderer];  // Only after window attachment
+       }
+   }
+   ```
+
+4. **Check Console.app** for Metal shader compilation errors - Filter for "SSKMetalParticleRenderer" to see detailed error messages.
+
+### Changes not appearing after rebuild
+
+**Symptoms:** Rebuilt screen saver but System Settings shows old version.
+
+**Solution:** Run the cache refresh script:
+```bash
+./scripts/refresh-screensaver-services.sh
+```
+
+Or use the full install-and-refresh workflow:
+```bash
+./scripts/install-and-refresh.sh Demos/YourSaver
+```
+
+### Screen saver doesn't appear in System Settings
+
+**Symptoms:** Bundle installed to `~/Library/Screen Savers/` but doesn't show up in list.
+
+**Common causes:**
+1. **Bundle not properly formed** - Verify with: `ls -la ~/Library/Screen\ Savers/YourSaver.saver/Contents/MacOS/`
+2. **Info.plist issues** - Ensure `NSPrincipalClass` matches your view class name exactly
+3. **Launch Services database stale** - The refresh script now clears this automatically
+
+### Preferences not updating in real-time
+
+**Symptoms:** Changes in System Settings don't appear until restarting preview.
+
+**Solution:** The kit polls preferences every 0.5 seconds. Changes should appear automatically. If not:
+1. Verify you implemented `preferencesDidChange:changedKeys:`
+2. Check that `defaultPreferences` returns the correct keys
+3. Ensure you're not caching values that should update

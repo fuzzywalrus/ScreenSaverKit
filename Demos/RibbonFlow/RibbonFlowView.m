@@ -20,6 +20,9 @@ static NSString * const kPrefSpeed         = @"ribbonFlowSpeed";
 static NSString * const kPrefPalette       = @"ribbonFlowPalette";
 static NSString * const kPrefTrailWidth    = @"ribbonFlowTrailWidth";
 static NSString * const kPrefAdditiveBlend = @"ribbonFlowAdditiveBlend";
+static NSString * const kPrefDiagnostics   = @"ribbonFlowDiagnostics";
+static NSString * const kPrefSoftEdges    = @"ribbonFlowSoftEdges";
+static NSString * const kPrefFrameRate    = @"ribbonFlowFrameRate";
 
 typedef struct {
     NSPoint position;
@@ -39,11 +42,25 @@ typedef struct {
 @property (nonatomic) BOOL additiveBlend;
 @property (nonatomic, copy) NSString *paletteIdentifier;
 @property (nonatomic) BOOL metalEnabled;
+@property (nonatomic, strong) id<MTLDevice> metalDevice;
 @property (nonatomic, strong) CAMetalLayer *metalLayer;
 @property (nonatomic, strong) SSKMetalParticleRenderer *metalRenderer;
+@property (nonatomic) BOOL metalRenderingActive;
+@property (nonatomic) BOOL awaitingMetalDrawable;
+@property (nonatomic) NSUInteger metalSuccessCount;
+@property (nonatomic) NSUInteger metalFailureCount;
+@property (nonatomic, copy) NSString *metalStatusText;
+@property (nonatomic, strong) CATextLayer *metalStatusLayer;
+@property (nonatomic, getter=isDiagnosticsEnabled) BOOL diagnosticsEnabled;
+@property (nonatomic) BOOL softEdgesEnabled;
+@property (nonatomic) NSInteger targetFramesPerSecond;
 @end
 
 @implementation RibbonFlowView
+
+- (void)dealloc {
+    [SSKDiagnostics setEnabled:YES];
+}
 
 - (NSDictionary<NSString *,id> *)defaultPreferences {
     RibbonFlowRegisterPalettes();
@@ -52,6 +69,9 @@ typedef struct {
         kPrefSpeed: @(1.0),
         kPrefTrailWidth: @(1.0),
         kPrefAdditiveBlend: @(YES),
+        kPrefDiagnostics: @(YES),
+        kPrefSoftEdges: @(YES),
+        kPrefFrameRate: @"30",
         kPrefPalette: RibbonFlowDefaultPaletteIdentifier()
     };
 }
@@ -63,30 +83,14 @@ typedef struct {
         _emitters = [NSMutableArray array];
         _particleSystem = [[SSKParticleSystem alloc] initWithCapacity:2048];
         self.particleSystem.metalSimulationEnabled = NO;
-        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-        if (device) {
-            self.wantsLayer = YES;
-            CAMetalLayer *metalLayer = [CAMetalLayer layer];
-            metalLayer.device = device;
-            metalLayer.pixelFormat = MTLPixelFormatBGRA8Unorm;
-            metalLayer.framebufferOnly = YES;
-            metalLayer.contentsScale = NSScreen.mainScreen ? NSScreen.mainScreen.backingScaleFactor : 1.0;
-            metalLayer.frame = self.bounds;
-            metalLayer.drawableSize = CGSizeMake(self.bounds.size.width * metalLayer.contentsScale,
-                                                 self.bounds.size.height * metalLayer.contentsScale);
-            metalLayer.backgroundColor = NSColor.blackColor.CGColor;
-            self.layer = metalLayer;
-            _metalLayer = metalLayer;
-            _metalRenderer = [[SSKMetalParticleRenderer alloc] initWithLayer:metalLayer];
-            self.metalEnabled = (_metalRenderer != nil);
-            if (!self.metalEnabled) {
-                self.layer = nil;
-                _metalLayer = nil;
-                _metalRenderer = nil;
-            }
-        } else {
-            self.metalEnabled = NO;
-        }
+        self.metalEnabled = NO;
+        self.metalRenderingActive = NO;
+        self.diagnosticsEnabled = YES;
+        self.softEdgesEnabled = YES;
+        self.targetFramesPerSecond = 30;
+        self.metalStatusText = @"Metal: waiting for device";
+        _metalSuccessCount = 0;
+        _metalFailureCount = 0;
 
         [self configureParticleRenderHandler];
 
@@ -96,6 +100,33 @@ typedef struct {
         [self rebuildEmitters];
     }
     return self;
+}
+
+- (void)setMetalStatusText:(NSString *)metalStatusText {
+    if ((_metalStatusText == metalStatusText) || [_metalStatusText isEqualToString:metalStatusText]) {
+        return;
+    }
+    _metalStatusText = [metalStatusText copy];
+    [self updateMetalStatusLayerString];
+}
+
+- (void)setDiagnosticsEnabled:(BOOL)diagnosticsEnabled {
+    if (_diagnosticsEnabled == diagnosticsEnabled) { return; }
+    _diagnosticsEnabled = diagnosticsEnabled;
+    [SSKDiagnostics setEnabled:diagnosticsEnabled];
+    if (self.metalStatusLayer) {
+        self.metalStatusLayer.hidden = !diagnosticsEnabled;
+    }
+    if (!diagnosticsEnabled) {
+        [self setNeedsDisplay:YES];
+    }
+    [self updateMetalStatusLayerString];
+}
+
+- (void)setSoftEdgesEnabled:(BOOL)softEdgesEnabled {
+    if (_softEdgesEnabled == softEdgesEnabled) { return; }
+    _softEdgesEnabled = softEdgesEnabled;
+    [self configureParticleRenderHandler];
 }
 
 - (void)setFrame:(NSRect)frame {
@@ -112,6 +143,7 @@ typedef struct {
 - (void)layout {
     [super layout];
     [self updateMetalLayerDrawableSize];
+    [self layoutMetalStatusLayer];
 }
 
 - (void)rebuildEmitters {
@@ -140,6 +172,11 @@ typedef struct {
 }
 
 - (void)animateOneFrame {
+    [self ensureMetalDevice];
+    [self ensureMetalLayer];
+    [self ensureMetalRenderer];
+    [self updateMetalLayerDrawableSize];
+
     NSTimeInterval dt = [self advanceAnimationClock];
     if (dt <= 0.0) { dt = 1.0 / 60.0; }
 
@@ -149,18 +186,50 @@ typedef struct {
     [self.particleSystem advanceBy:dt];
 
     BOOL renderedWithMetal = NO;
-    if (self.metalEnabled && self.metalRenderer && self.metalLayer) {
-        [self updateMetalLayerDrawableSize];
+    self.awaitingMetalDrawable = NO;
+
+    if (self.metalRenderer && self.metalLayer) {
         renderedWithMetal = [self.particleSystem renderWithMetalRenderer:self.metalRenderer
                                                                blendMode:(self.additiveBlend ? SSKParticleBlendModeAdditive : SSKParticleBlendModeAlpha)
                                                             viewportSize:self.bounds.size];
-        if (!renderedWithMetal) {
-            self.metalEnabled = NO;
-            self.metalRenderer = nil;
-            self.metalLayer = nil;
-            self.layer = nil;
-            [self configureParticleRenderHandler];
+        if (renderedWithMetal) {
+            self.metalRenderingActive = YES;
+            self.metalSuccessCount += 1;
+            self.metalFailureCount = 0;
+            self.metalStatusText = [NSString stringWithFormat:@"Metal: active (successes %lu)",
+                                    (unsigned long)self.metalSuccessCount];
+        } else {
+            self.awaitingMetalDrawable = YES;
+            self.metalRenderingActive = NO;
+            self.metalFailureCount += 1;
+            self.metalStatusText = [NSString stringWithFormat:@"Metal: waiting for drawable (failures %lu)",
+                                    (unsigned long)self.metalFailureCount];
         }
+    } else if (!self.metalDevice) {
+        self.metalRenderingActive = NO;
+        self.metalStatusText = @"Metal: device unavailable";
+    } else if (!self.metalLayer) {
+        self.metalRenderingActive = NO;
+        self.metalStatusText = @"Metal: layer unavailable";
+    } else {
+        self.metalRenderingActive = NO;
+        NSString *error = [SSKMetalParticleRenderer lastCreationErrorMessage];
+        self.metalStatusText = error.length ? [NSString stringWithFormat:@"Metal: renderer unavailable (%@)", error] :
+                                              @"Metal: renderer unavailable";
+    }
+
+    BOOL previousMetalEnabled = self.metalEnabled;
+    self.metalEnabled = (self.metalRenderer != nil);
+    if (previousMetalEnabled != self.metalEnabled) {
+        [self configureParticleRenderHandler];
+    }
+
+    if (self.diagnosticsEnabled) {
+        [self ensureMetalStatusLayer];
+        [self layoutMetalStatusLayer];
+        [self updateMetalStatusLayerString];
+    } else if (self.metalStatusLayer) {
+        self.metalStatusLayer.hidden = YES;
     }
 
     if (!renderedWithMetal) {
@@ -169,7 +238,7 @@ typedef struct {
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
-    if (self.metalEnabled && self.metalRenderer) { return; }
+    if (self.metalRenderingActive && self.metalRenderer) { return; }
     [[NSColor blackColor] setFill];
     NSRectFill(dirtyRect);
 
@@ -178,9 +247,19 @@ typedef struct {
 
     [self.particleSystem drawInContext:ctx];
 
-    [SSKDiagnostics drawOverlayInView:self
-                                text:@"Ribbon Flow Demo"
-                     framesPerSecond:self.animationClock.framesPerSecond];
+    if (self.diagnosticsEnabled) {
+        NSString *metalLine = self.metalStatusText ?: @"Metal: inactive";
+        NSUInteger alive = self.particleSystem.aliveParticleCount;
+        NSString *overlay = [NSString stringWithFormat:@"Ribbon Flow Demo - %@ | FPS: %.1f (target %ld) | Alive: %lu | Metal success: %lu",
+                             metalLine,
+                             self.animationClock.framesPerSecond,
+                             (long)self.targetFramesPerSecond,
+                             (unsigned long)alive,
+                             (unsigned long)self.metalSuccessCount];
+        [SSKDiagnostics drawOverlayInView:self
+                                    text:overlay
+                         framesPerSecond:self.animationClock.framesPerSecond];
+    }
 }
 
 - (void)updateEmittersWithDelta:(NSTimeInterval)dt {
@@ -245,7 +324,7 @@ typedef struct {
                          module:(NSString *)module {
     if (!emitter) { return; }
 
-    NSUInteger spawnCount = 6;
+    NSUInteger spawnCount = 2;
     NSPoint dir = emitter->velocity;
     if (SSKVectorLength(dir) < 0.001) {
         dir = [self randomUnitVector];
@@ -254,21 +333,36 @@ typedef struct {
     CGFloat baseSpeed = SSKVectorLength(dir);
 
     [self.particleSystem spawnParticles:spawnCount initializer:^(SSKParticle *particle) {
-        CGFloat variation = ((CGFloat)arc4random() / UINT32_MAX) * 0.08;
+        CGFloat variation = ((CGFloat)arc4random() / UINT32_MAX) * 0.06;
         CGFloat progress = emitter->colorPhase + variation;
-        NSColor *color = palette ?
-            [manager colorForPalette:palette progress:progress interpolationMode:SSKPaletteInterpolationModeLoop] :
-            [NSColor whiteColor];
+    NSColor *paletteColor = palette ?
+        [manager colorForPalette:palette progress:progress interpolationMode:SSKPaletteInterpolationModeLoop] :
+        [NSColor whiteColor];
 
-        particle.position = emitter->position;
-        particle.velocity = SSKVectorScale(unitDir, baseSpeed * 0.25);
-        particle.maxLife = 1.6 + ((CGFloat)arc4random() / UINT32_MAX) * 0.3;
+    NSColor *srgb = [paletteColor colorUsingColorSpace:[NSColorSpace sRGBColorSpace]] ?: paletteColor;
+    CGFloat hue = 0.0;
+    CGFloat saturation = 0.0;
+    CGFloat brightness = 0.0;
+    CGFloat alpha = 1.0;
+    if ([srgb colorSpace].colorSpaceModel == NSColorSpaceModelRGB) {
+        [srgb getHue:&hue saturation:&saturation brightness:&brightness alpha:&alpha];
+        brightness = MIN(brightness, 0.82);
+        saturation = MIN(MAX(saturation, 0.45), 1.0);
+        srgb = [NSColor colorWithHue:hue saturation:saturation brightness:brightness alpha:1.0];
+    }
+
+    CGFloat baseAlpha = self.additiveBlend ? 0.22 : 0.72;
+    NSColor *color = [srgb colorWithAlphaComponent:baseAlpha];
+
+    particle.position = emitter->position;
+        particle.velocity = SSKVectorScale(unitDir, baseSpeed * 0.35);
+        particle.maxLife = 1.15 + ((CGFloat)arc4random() / UINT32_MAX) * 0.45;
         particle.life = 0.0;
         particle.color = color;
-        CGFloat sizeBase = self.trailWidth * (10.0 + ((CGFloat)arc4random() / UINT32_MAX) * 6.0);
+        CGFloat sizeBase = self.trailWidth * (7.5 + ((CGFloat)arc4random() / UINT32_MAX) * 3.5);
         particle.size = sizeBase;
         particle.baseSize = sizeBase;
-        particle.userScalar = sizeBase;
+        particle.userScalar = self.softEdgesEnabled ? 4.5 : 0.0;
         particle.userVector = unitDir;
         particle.sizeOverLifeRange = SSKScalarRangeMake(1.0, 0.35);
         particle.behaviorOptions = (SSKParticleBehaviorOptionFadeAlpha | SSKParticleBehaviorOptionFadeSize);
@@ -288,15 +382,11 @@ typedef struct {
 
 - (void)configureParticleRenderHandler {
     __weak typeof(self) weakSelf = self;
-    if (self.metalEnabled) {
-        self.particleSystem.renderHandler = nil;
-        return;
-    }
     self.particleSystem.renderHandler = ^(CGContextRef ctx, SSKParticle *particle) {
         CGFloat t = particle.life / MAX(0.0001, particle.maxLife);
         CGFloat fade = 1.0 - t;
         CGFloat width = MAX(1.0, particle.size);
-        CGFloat length = width * (6.0 + 12.0 * fade);
+        CGFloat length = width * (2.4 + 6.0 * fade);
         NSPoint dir = particle.userVector;
         if (SSKVectorLength(dir) < 0.0001) {
             dir = [weakSelf randomUnitVector];
@@ -306,6 +396,40 @@ typedef struct {
         NSColor *color = particle.color ?: [NSColor whiteColor];
         CGFloat alpha = color.alphaComponent * fade;
         NSColor *core = [color colorWithAlphaComponent:alpha];
+
+        if (weakSelf.softEdgesEnabled) {
+            NSColor *startColor = [core colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]] ?: core;
+            CGFloat startComponents[4] = {startColor.redComponent, startColor.greenComponent, startColor.blueComponent, startColor.alphaComponent};
+            CGFloat midComponents[4] = {startComponents[0], startComponents[1], startComponents[2], startComponents[3] * 0.45f};
+            CGFloat endComponents[4] = {startComponents[0], startComponents[1], startComponents[2], 0.0f};
+            CGFloat components[12] = {
+                startComponents[0], startComponents[1], startComponents[2], startComponents[3],
+                midComponents[0], midComponents[1], midComponents[2], midComponents[3],
+                endComponents[0], endComponents[1], endComponents[2], endComponents[3]
+            };
+            CGFloat locations[3] = {0.0, 0.55, 1.0};
+            CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+            if (space) {
+                CGGradientRef gradient = CGGradientCreateWithColorComponents(space, components, locations, 3);
+                if (gradient) {
+                    CGContextSaveGState(ctx);
+                    CGContextTranslateCTM(ctx, particle.position.x, particle.position.y);
+                    CGContextRotateCTM(ctx, angle);
+                    CGContextScaleCTM(ctx, length * 0.5, width * 0.5);
+                    CGContextDrawRadialGradient(ctx,
+                                                gradient,
+                                                CGPointZero,
+                                                0.0,
+                                                CGPointZero,
+                                                1.0,
+                                                kCGGradientDrawsAfterEndLocation);
+                    CGContextRestoreGState(ctx);
+                    CGGradientRelease(gradient);
+                }
+                CGColorSpaceRelease(space);
+            }
+            return;
+        }
 
         CGColorRef glow = CGColorCreateCopyWithAlpha(core.CGColor, alpha * 0.75);
         CGContextSaveGState(ctx);
@@ -330,15 +454,17 @@ typedef struct {
 }
 
 - (void)updateMetalSupportIfNeeded {
-    if (!self.metalEnabled || !self.metalLayer) { return; }
-    if (self.layer != self.metalLayer) {
+    [self ensureMetalDevice];
+    [self ensureMetalLayer];
+    [self ensureMetalRenderer];
+    if (self.metalLayer && self.layer != self.metalLayer) {
         self.layer = self.metalLayer;
     }
     [self updateMetalLayerDrawableSize];
 }
 
 - (void)updateMetalLayerDrawableSize {
-    if (!self.metalEnabled || !self.metalLayer) { return; }
+    if (!self.metalLayer) { return; }
     CGFloat scale = 1.0;
     if (self.window) {
         scale = self.window.backingScaleFactor;
@@ -349,6 +475,131 @@ typedef struct {
     self.metalLayer.frame = self.bounds;
     self.metalLayer.drawableSize = CGSizeMake(self.bounds.size.width * scale,
                                               self.bounds.size.height * scale);
+}
+
+- (void)ensureMetalDevice {
+    if (self.metalDevice) { return; }
+    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    if (!device) {
+        self.metalEnabled = NO;
+        self.metalStatusText = @"Metal: device unavailable";
+        return;
+    }
+    self.metalDevice = device;
+    self.metalStatusText = [NSString stringWithFormat:@"Metal: device %@", device.name];
+}
+
+- (void)ensureMetalLayer {
+    if (self.metalLayer || !self.metalDevice) { return; }
+    if (!self.window) {
+        self.metalStatusText = @"Metal: waiting for window";
+        return;
+    }
+
+    self.wantsLayer = YES;
+    CAMetalLayer *layer = [CAMetalLayer layer];
+    layer.device = self.metalDevice;
+    layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+    layer.framebufferOnly = YES;
+    layer.opaque = YES;
+    layer.needsDisplayOnBoundsChange = YES;
+    layer.backgroundColor = NSColor.blackColor.CGColor;
+    if ([layer respondsToSelector:@selector(setPresentsWithTransaction:)]) {
+        layer.presentsWithTransaction = NO;
+    }
+#if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 101300
+    if (@available(macOS 10.13, *)) {
+        layer.displaySyncEnabled = YES;
+    }
+#endif
+    self.layer = layer;
+    if ([self respondsToSelector:@selector(setLayerContentsRedrawPolicy:)]) {
+        self.layerContentsRedrawPolicy = NSViewLayerContentsRedrawNever;
+    }
+    self.metalLayer = layer;
+    self.metalStatusText = @"Metal: layer attached";
+    [self ensureMetalStatusLayer];
+}
+
+- (void)ensureMetalRenderer {
+    if (!self.metalLayer || self.metalRenderer) { return; }
+    SSKMetalParticleRenderer *renderer = [[SSKMetalParticleRenderer alloc] initWithLayer:self.metalLayer];
+    if (!renderer) {
+        NSString *error = [SSKMetalParticleRenderer lastCreationErrorMessage];
+        self.metalEnabled = NO;
+        self.metalStatusText = error.length ? [NSString stringWithFormat:@"Metal: renderer init failed (%@)", error] :
+                                              @"Metal: renderer init failed";
+        return;
+    }
+    self.metalRenderer = renderer;
+    self.metalEnabled = YES;
+    self.metalStatusText = @"Metal: renderer initialised";
+}
+
+- (void)ensureMetalStatusLayer {
+    if (!self.diagnosticsEnabled) { return; }
+    if (!self.metalLayer || self.metalStatusLayer) { return; }
+    CATextLayer *textLayer = [CATextLayer layer];
+    textLayer.alignmentMode = kCAAlignmentLeft;
+    textLayer.foregroundColor = [NSColor colorWithCalibratedWhite:0.95 alpha:1.0].CGColor;
+    textLayer.backgroundColor = [NSColor colorWithCalibratedWhite:0 alpha:0.55].CGColor;
+    textLayer.cornerRadius = 8.0;
+    textLayer.masksToBounds = YES;
+    textLayer.wrapped = YES;
+    CGFloat scale = 1.0;
+    if (self.window) {
+        scale = self.window.backingScaleFactor;
+    } else if (NSScreen.mainScreen) {
+        scale = NSScreen.mainScreen.backingScaleFactor;
+    }
+    textLayer.contentsScale = scale;
+    textLayer.font = (__bridge CFTypeRef)[NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightRegular];
+    textLayer.fontSize = 12.0;
+    [self.metalLayer addSublayer:textLayer];
+    self.metalStatusLayer = textLayer;
+    [self layoutMetalStatusLayer];
+    [self updateMetalStatusLayerString];
+}
+
+- (void)layoutMetalStatusLayer {
+    if (!self.metalStatusLayer) { return; }
+    if (!self.diagnosticsEnabled) {
+        self.metalStatusLayer.hidden = YES;
+        return;
+    }
+    CGFloat scale = 1.0;
+    if (self.window) {
+        scale = self.window.backingScaleFactor;
+    } else if (NSScreen.mainScreen) {
+        scale = NSScreen.mainScreen.backingScaleFactor;
+    }
+    CGFloat width = MIN(self.bounds.size.width - 32.0, 420.0);
+    CGFloat height = 80.0;
+    self.metalStatusLayer.frame = CGRectMake(18.0,
+                                             self.bounds.size.height - height - 18.0,
+                                             width,
+                                             height);
+    self.metalStatusLayer.contentsScale = scale;
+}
+
+- (void)updateMetalStatusLayerString {
+    if (!self.metalStatusLayer) { return; }
+    if (!self.diagnosticsEnabled) {
+        self.metalStatusLayer.hidden = YES;
+        return;
+    }
+    self.metalStatusLayer.hidden = NO;
+    NSString *status = self.metalStatusText.length ? self.metalStatusText : @"Metal: inactive";
+    double fps = self.animationClock.framesPerSecond;
+    NSUInteger alive = self.particleSystem.aliveParticleCount;
+    NSString *metrics = [NSString stringWithFormat:@"FPS: %.1f (target %ld)    Alive: %lu    Metal success: %lu",
+                         fps,
+                         (long)self.targetFramesPerSecond,
+                         (unsigned long)alive,
+                         (unsigned long)self.metalSuccessCount];
+    self.metalStatusLayer.string = [NSString stringWithFormat:@"%@\n%@",
+                                    status,
+                                    metrics];
 }
 
 - (BOOL)hasConfigureSheet {
@@ -396,6 +647,31 @@ typedef struct {
     NSButton *blendToggle = [NSButton checkboxWithTitle:@"Use additive glow" target:nil action:nil];
     [binder bindCheckbox:blendToggle key:kPrefAdditiveBlend];
     [stack addArrangedSubview:blendToggle];
+
+    NSButton *diagnosticsToggle = [NSButton checkboxWithTitle:@"Show diagnostics overlay" target:nil action:nil];
+    [binder bindCheckbox:diagnosticsToggle key:kPrefDiagnostics];
+    [stack addArrangedSubview:diagnosticsToggle];
+
+    NSButton *softEdgesToggle = [NSButton checkboxWithTitle:@"Use soft-edged trails" target:nil action:nil];
+    [binder bindCheckbox:softEdgesToggle key:kPrefSoftEdges];
+    [stack addArrangedSubview:softEdgesToggle];
+
+    NSTextField *fpsLabel = [NSTextField labelWithString:@"Frame Rate"];
+    fpsLabel.font = [NSFont systemFontOfSize:12 weight:NSFontWeightRegular];
+    NSPopUpButton *fpsPopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [fpsPopup addItemWithTitle:@"30 FPS"];
+    fpsPopup.lastItem.representedObject = @"30";
+    [fpsPopup addItemWithTitle:@"60 FPS"];
+    fpsPopup.lastItem.representedObject = @"60";
+    [binder bindPopUpButton:fpsPopup key:kPrefFrameRate];
+
+    NSStackView *fpsRow = [[NSStackView alloc] initWithFrame:NSZeroRect];
+    fpsRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    fpsRow.spacing = 8.0;
+    [fpsRow addArrangedSubview:fpsLabel];
+    [fpsRow addArrangedSubview:fpsPopup];
+    [fpsPopup setContentHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [stack addArrangedSubview:fpsRow];
 }
 
 - (NSView *)sliderRowWithTitle:(NSString *)title
@@ -513,6 +789,33 @@ typedef struct {
         [defaults[kPrefAdditiveBlend] boolValue];
     self.additiveBlend = additive;
     self.particleSystem.globalDamping = additive ? 0.18 : 0.15;
+
+    BOOL diagnostics = [preferences[kPrefDiagnostics] respondsToSelector:@selector(boolValue)] ?
+        [preferences[kPrefDiagnostics] boolValue] :
+        [defaults[kPrefDiagnostics] boolValue];
+    self.diagnosticsEnabled = diagnostics;
+
+    BOOL softEdges = [preferences[kPrefSoftEdges] respondsToSelector:@selector(boolValue)] ?
+        [preferences[kPrefSoftEdges] boolValue] :
+        [defaults[kPrefSoftEdges] boolValue];
+    self.softEdgesEnabled = softEdges;
+
+    NSString *frameRateString = nil;
+    id frameRateValue = preferences[kPrefFrameRate];
+    if ([frameRateValue isKindOfClass:[NSString class]]) {
+        frameRateString = frameRateValue;
+    } else if ([frameRateValue respondsToSelector:@selector(stringValue)]) {
+        frameRateString = [frameRateValue stringValue];
+    } else {
+        id defaultFrameRate = defaults[kPrefFrameRate];
+        if ([defaultFrameRate isKindOfClass:[NSString class]]) {
+            frameRateString = defaultFrameRate;
+        }
+    }
+    NSInteger fps = frameRateString.length ? frameRateString.integerValue : 30;
+    if (fps != 60) { fps = 30; }
+    self.targetFramesPerSecond = fps;
+    self.animationTimeInterval = 1.0 / MAX(1, fps);
 
     if (newEmitterCount != self.emitterCount || (changedKeys && [changedKeys containsObject:kPrefEmitterCount])) {
         self.emitterCount = newEmitterCount;

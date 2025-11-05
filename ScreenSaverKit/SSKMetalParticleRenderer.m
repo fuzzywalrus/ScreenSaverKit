@@ -14,10 +14,14 @@ static NSString * const kSSKMetalShaderSource =
 "    float width;\n"
 "    float length;\n"
 "    float4 color;\n"
+"    float softness;\n"
 "};\n"
 "struct ParticleVertexOut {\n"
 "    float4 position [[position]];\n"
 "    float4 color;\n"
+"    float2 quad;\n"
+"    float2 extent;\n"
+"    float softness;\n"
 "};\n"
 "vertex ParticleVertexOut particleVertex(uint vertexID [[vertex_id]],\n"
 "                            uint instanceID [[instance_id]],\n"
@@ -39,10 +43,22 @@ static NSString * const kSSKMetalShaderSource =
 "    ParticleVertexOut out;\n"
 "    out.position = float4(clip, 0.0, 1.0);\n"
 "    out.color = data.color;\n"
+"    out.quad = quad;\n"
+"    out.extent = float2(data.length * 0.5, data.width * 0.5);\n"
+"    out.softness = data.softness;\n"
 "    return out;\n"
 "}\n"
 "fragment float4 particleFragment(ParticleVertexOut in [[stage_in]]) {\n"
-"    return in.color;\n"
+"    float softness = in.softness;\n"
+"    if (softness <= 0.01) {\n"
+"        return in.color;\n"
+"    }\n"
+"    float2 extent = max(in.extent, float2(0.0001));\n"
+"    float2 local = float2(in.quad.x * extent.x, in.quad.y * extent.y);\n"
+"    float2 norm = float2(local.x / extent.x, local.y / extent.y);\n"
+"    float dist = length(norm);\n"
+"    float alpha = in.color.a * exp(-max(softness, 0.01) * dist * dist * 4.0);\n"
+"    return float4(in.color.rgb, alpha);\n"
 "}\n";
 
 typedef struct {
@@ -51,6 +67,8 @@ typedef struct {
     float width;
     float length;
     vector_float4 color;
+    float softness;
+    float padding[3];
 } SSKMetalInstanceData;
 
 static NSString *SSKMetalParticleRendererLastErrorMessage = nil;
@@ -213,6 +231,11 @@ static void SSKMetalParticleRendererSetLastErrorMessage(NSString *message) {
                                      (float)color.greenComponent,
                                      (float)color.blueComponent,
                                      (float)color.alphaComponent};
+        float softness = (float)particle.userScalar;
+        if (!isfinite(softness) || softness < 0.0f) {
+            softness = 0.0f;
+        }
+        data.softness = softness;
         instances[index++] = data;
     }
 
