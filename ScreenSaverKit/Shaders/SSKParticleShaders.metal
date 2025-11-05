@@ -59,52 +59,52 @@ fragment float4 particleFragment(ParticleVertexOut in [[stage_in]]) {
 
 // --- Gaussian blur compute kernels ---
 
-static inline float gaussianWeight(float x, float sigma) {
-    return exp(-0.5f * (x * x) / (sigma * sigma));
-}
+#define SSK_MAX_BLUR_RADIUS 32u
 
 kernel void gaussianBlurHorizontal(texture2d<float, access::sample> inTexture [[texture(0)]],
                                    texture2d<float, access::write> outTexture [[texture(1)]],
-                                   constant float &sigma [[buffer(0)]],
+                                   constant float *weights [[buffer(0)]],
+                                   constant uint &radius [[buffer(1)]],
                                    uint2 gid [[thread_position_in_grid]]) {
     if (gid.x >= outTexture.get_width() || gid.y >= outTexture.get_height()) {
         return;
     }
-    constexpr sampler s(address::clamp_to_edge, filter::nearest);
-    float radius = max(1.0f, sigma * 3.0f);
+    constexpr sampler s(address::clamp_to_edge, filter::linear);
+    uint clampedRadius = min(radius, SSK_MAX_BLUR_RADIUS);
     float2 texSize = float2(inTexture.get_width(), inTexture.get_height());
     float2 uv = (float2(gid) + 0.5f) / texSize;
-    float4 color = float4(0.0);
-    float total = 0.0f;
-    for (int i = -int(radius); i <= int(radius); ++i) {
-        float weight = gaussianWeight(i, sigma);
-        float2 offset = float2(i, 0.0f) / texSize;
-        color += inTexture.sample(s, uv + offset) * weight;
-        total += weight;
+    float4 accum = inTexture.sample(s, uv) * weights[0];
+    float2 pixelStep = float2(1.0f / texSize.x, 0.0f);
+    for (uint i = 1u; i <= clampedRadius; ++i) {
+        float weight = weights[i];
+        float2 offset = pixelStep * float(i);
+        accum += inTexture.sample(s, uv + offset) * weight;
+        accum += inTexture.sample(s, uv - offset) * weight;
     }
-    outTexture.write(color / total, gid);
+    outTexture.write(accum, gid);
 }
 
 kernel void gaussianBlurVertical(texture2d<float, access::sample> inTexture [[texture(0)]],
                                  texture2d<float, access::write> outTexture [[texture(1)]],
-                                 constant float &sigma [[buffer(0)]],
+                                 constant float *weights [[buffer(0)]],
+                                 constant uint &radius [[buffer(1)]],
                                  uint2 gid [[thread_position_in_grid]]) {
     if (gid.x >= outTexture.get_width() || gid.y >= outTexture.get_height()) {
         return;
     }
-    constexpr sampler s(address::clamp_to_edge, filter::nearest);
-    float radius = max(1.0f, sigma * 3.0f);
+    constexpr sampler s(address::clamp_to_edge, filter::linear);
+    uint clampedRadius = min(radius, SSK_MAX_BLUR_RADIUS);
     float2 texSize = float2(inTexture.get_width(), inTexture.get_height());
     float2 uv = (float2(gid) + 0.5f) / texSize;
-    float4 color = float4(0.0);
-    float total = 0.0f;
-    for (int i = -int(radius); i <= int(radius); ++i) {
-        float weight = gaussianWeight(i, sigma);
-        float2 offset = float2(0.0f, i) / texSize;
-        color += inTexture.sample(s, uv + offset) * weight;
-        total += weight;
+    float4 accum = inTexture.sample(s, uv) * weights[0];
+    float2 pixelStep = float2(0.0f, 1.0f / texSize.y);
+    for (uint i = 1u; i <= clampedRadius; ++i) {
+        float weight = weights[i];
+        float2 offset = pixelStep * float(i);
+        accum += inTexture.sample(s, uv + offset) * weight;
+        accum += inTexture.sample(s, uv - offset) * weight;
     }
-    outTexture.write(color / total, gid);
+    outTexture.write(accum, gid);
 }
 
 // --- Bloom kernels ---

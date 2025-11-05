@@ -45,6 +45,11 @@ NSString * const SSKMetalEffectIdentifierColorGrading = @"com.ssk.effects.colorg
         }
         layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
         layer.framebufferOnly = NO;
+        if (@available(macOS 10.13.2, *)) {
+            if ([layer respondsToSelector:@selector(setAllowsNextDrawableTimeout:)]) {
+                layer.allowsNextDrawableTimeout = YES;
+            }
+        }
         _commandQueue = [device newCommandQueue];
         if (!_commandQueue) {
             [SSKDiagnostics log:@"SSKMetalRenderer: failed to create command queue."];
@@ -412,6 +417,11 @@ NSString * const SSKMetalEffectIdentifierColorGrading = @"com.ssk.effects.colorg
     }
     if (!self.layer) {
         return nil;
+    }
+    if (@available(macOS 10.13.2, *)) {
+        if ([self.layer respondsToSelector:@selector(setAllowsNextDrawableTimeout:)]) {
+            self.layer.allowsNextDrawableTimeout = YES;
+        }
     }
     id<CAMetalDrawable> drawable = [self.layer nextDrawable];
     if (!drawable) {

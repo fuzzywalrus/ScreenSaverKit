@@ -1,17 +1,31 @@
 #import "SSKMetalBlurPass.h"
 
 #import <TargetConditionals.h>
+#import <math.h>
 
 #import "SSKDiagnostics.h"
 #import "SSKMetalTextureCache.h"
+
+static const uint32_t kSSKMetalBlurMaxRadius = 32u;
 
 @interface SSKMetalBlurPass ()
 @property (nonatomic, strong) id<MTLDevice> device;
 @property (nonatomic, strong) id<MTLComputePipelineState> blurPipelineHorizontal;
 @property (nonatomic, strong) id<MTLComputePipelineState> blurPipelineVertical;
+@property (nonatomic, strong, nullable) id<MTLBuffer> weightsBuffer;
+@property (nonatomic) float cachedSigma;
+@property (nonatomic) uint32_t cachedRadius;
 @end
 
 @implementation SSKMetalBlurPass
+
+- (instancetype)init {
+    if ((self = [super init])) {
+        _cachedSigma = -1.0f;
+        _cachedRadius = 0;
+    }
+    return self;
+}
 
 - (BOOL)setupWithDevice:(id<MTLDevice>)device library:(id<MTLLibrary>)library {
     NSParameterAssert(device);
@@ -79,38 +93,43 @@
     }
 
     float sigma = MAX(0.5f, (float)self.radius);
+    uint32_t radius = (uint32_t)ceilf(MAX(1.0f, sigma * 3.0f));
+    radius = MIN(radius, kSSKMetalBlurMaxRadius);
+    if (![self prepareWeightsForSigma:sigma radius:radius]) {
+        [textureCache releaseTexture:scratch];
+        return NO;
+    }
 
-    // Horizontal pass: source -> scratch
     id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
     if (!encoder) {
         [textureCache releaseTexture:scratch];
         return NO;
     }
+
+    // Horizontal pass: source -> scratch
     MTLSize threadsPerGroup = [self threadgroupSizeForPipeline:self.blurPipelineHorizontal];
-    MTLSize threadGroups = MTLSizeMake((scratch.width + threadsPerGroup.width - 1) / threadsPerGroup.width,
-                                       (scratch.height + threadsPerGroup.height - 1) / threadsPerGroup.height,
-                                       1);
+    MTLSize threadGroups = [self threadgroupCountForWidth:scratch.width
+                                                   height:scratch.height
+                                         threadsPerGroup:threadsPerGroup];
     [encoder setComputePipelineState:self.blurPipelineHorizontal];
     [encoder setTexture:source atIndex:0];
     [encoder setTexture:scratch atIndex:1];
-    [encoder setBytes:&sigma length:sizeof(float) atIndex:0];
+    [encoder setBuffer:self.weightsBuffer offset:0 atIndex:0];
+    uint32_t radiusValue = radius;
+    [encoder setBytes:&radiusValue length:sizeof(uint32_t) atIndex:1];
     [encoder dispatchThreadgroups:threadGroups threadsPerThreadgroup:threadsPerGroup];
-    [encoder endEncoding];
+    [encoder memoryBarrierWithScope:MTLBarrierScopeTextures];
 
     // Vertical pass: scratch -> destination
-    encoder = [commandBuffer computeCommandEncoder];
-    if (!encoder) {
-        [textureCache releaseTexture:scratch];
-        return NO;
-    }
     threadsPerGroup = [self threadgroupSizeForPipeline:self.blurPipelineVertical];
-    threadGroups = MTLSizeMake((destination.width + threadsPerGroup.width - 1) / threadsPerGroup.width,
-                               (destination.height + threadsPerGroup.height - 1) / threadsPerGroup.height,
-                               1);
+    threadGroups = [self threadgroupCountForWidth:destination.width
+                                           height:destination.height
+                                 threadsPerGroup:threadsPerGroup];
     [encoder setComputePipelineState:self.blurPipelineVertical];
     [encoder setTexture:scratch atIndex:0];
     [encoder setTexture:destination atIndex:1];
-    [encoder setBytes:&sigma length:sizeof(float) atIndex:0];
+    [encoder setBuffer:self.weightsBuffer offset:0 atIndex:0];
+    [encoder setBytes:&radiusValue length:sizeof(uint32_t) atIndex:1];
     [encoder dispatchThreadgroups:threadGroups threadsPerThreadgroup:threadsPerGroup];
     [encoder endEncoding];
 
@@ -120,15 +139,66 @@
 
 #pragma mark - Helpers
 
+- (BOOL)prepareWeightsForSigma:(float)sigma radius:(uint32_t)radius {
+    if (self.weightsBuffer && fabsf(self.cachedSigma - sigma) < 0.001f && self.cachedRadius == radius) {
+        return YES;
+    }
+    if (radius == 0 || radius > kSSKMetalBlurMaxRadius) {
+        return NO;
+    }
+
+    float weights[kSSKMetalBlurMaxRadius + 1] = {0.0f};
+    float sum = 0.0f;
+    weights[0] = 1.0f;
+    sum += weights[0];
+    float doubleSigmaSq = 2.0f * sigma * sigma;
+    for (uint32_t i = 1; i <= radius; ++i) {
+        float weight = expf(-(float)(i * i) / doubleSigmaSq);
+        weights[i] = weight;
+        sum += 2.0f * weight;
+    }
+    float invSum = sum > 0.00001f ? (1.0f / sum) : 1.0f;
+    for (uint32_t i = 0; i <= radius; ++i) {
+        weights[i] *= invSum;
+    }
+
+    float normalized[kSSKMetalBlurMaxRadius + 1] = {0.0f};
+    memcpy(normalized, weights, sizeof(float) * (radius + 1));
+
+    id<MTLBuffer> buffer = [self.device newBufferWithBytes:normalized
+                                                   length:sizeof(normalized)
+                                                  options:MTLResourceStorageModeShared];
+    if (!buffer) {
+        return NO;
+    }
+
+    self.weightsBuffer = buffer;
+    self.cachedSigma = sigma;
+    self.cachedRadius = radius;
+    return YES;
+}
+
 - (MTLSize)threadgroupSizeForPipeline:(id<MTLComputePipelineState>)pipeline {
     if (!pipeline) {
-        return MTLSizeMake(16, 16, 1);
+        return MTLSizeMake(32, 1, 1);
     }
     NSUInteger threadWidth = pipeline.threadExecutionWidth;
     NSUInteger maxThreads = pipeline.maxTotalThreadsPerThreadgroup;
-    NSUInteger height = MAX(1, MIN(16u, maxThreads / MAX(threadWidth, (NSUInteger)1)));
-    NSUInteger width = MIN(16u, threadWidth);
-    return MTLSizeMake(width, height, 1);
+    if (threadWidth == 0) {
+        threadWidth = 1;
+    }
+    threadWidth = MIN(threadWidth, maxThreads);
+    threadWidth = MIN(threadWidth, (NSUInteger)256);
+    threadWidth = MAX(threadWidth, (NSUInteger)1);
+    return MTLSizeMake(threadWidth, 1, 1);
+}
+
+- (MTLSize)threadgroupCountForWidth:(NSUInteger)width
+                             height:(NSUInteger)height
+                   threadsPerGroup:(MTLSize)threadsPerGroup {
+    NSUInteger groupsX = (width + threadsPerGroup.width - 1) / threadsPerGroup.width;
+    NSUInteger groupsY = (height + threadsPerGroup.height - 1) / MAX(threadsPerGroup.height, (NSUInteger)1);
+    return MTLSizeMake(groupsX, groupsY, 1);
 }
 
 @end

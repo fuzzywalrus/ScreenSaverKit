@@ -69,6 +69,9 @@
 
 - (void)setSharedBlurPass:(SSKMetalBlurPass *)blurPass {
     _sharedBlurPass = blurPass;
+    if (blurPass) {
+        self.fallbackBlurPass = nil;
+    }
 }
 
 - (nullable SSKMetalBlurPass *)resolvedBlurPass {
