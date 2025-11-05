@@ -98,6 +98,7 @@ Keeping these concerns in one place lets each screensaver focus on drawing and b
 - `Demos/DVDlogo/` – retro floating DVD logo with solid or rotating palette colour modes, adjustable size, speed, colour cycling, and optional random start behaviour. It also uses a multi-file project structure to demo a more advanced project structure. Build it via  `make -f Demos/DVDlogo/Makefile`.
 - `Demos/RibbonFlow/` – flowing additive ribbons inspired by the classic Apple Flurry screensaver. Build it via `make -f Demos/RibbonFlow/Makefile`.
 - `Demos/MetalParticleTest/` – a minimal particle fountain that flips automatically between Metal and CPU rendering, handy when verifying GPU availability or the bundled Metal particle renderer. Build it via `make -f Demos/MetalParticleTest/Makefile`.
+- `Demos/MetalDiagnostic/` – standalone Metal sanity checker that reports device, layer, drawable, and command-buffer status directly on screen. Build it via `make -f Demos/MetalDiagnostic/Makefile`.
 - `scripts/install-and-refresh.sh` – convenience script that builds, installs, and restarts the relevant macOS services (`legacyScreenSaver`, `WallpaperAgent`, `ScreenSaverEngine`) so macOS immediately sees your latest bundle. Usage:
 
   ```bash

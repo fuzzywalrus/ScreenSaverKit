@@ -3,6 +3,7 @@
 #import <simd/simd.h>
 
 #import "SSKParticleSystem.h"
+#import "SSKDiagnostics.h"
 
 static NSString * const kSSKMetalShaderSource =
 @"#include <metal_stdlib>\n"
@@ -14,7 +15,11 @@ static NSString * const kSSKMetalShaderSource =
 "    float length;\n"
 "    float4 color;\n"
 "};\n"
-"vertex float4 particleVertex(uint vertexID [[vertex_id]],\n"
+"struct ParticleVertexOut {\n"
+"    float4 position [[position]];\n"
+"    float4 color;\n"
+"};\n"
+"vertex ParticleVertexOut particleVertex(uint vertexID [[vertex_id]],\n"
 "                            uint instanceID [[instance_id]],\n"
 "                            constant float2 *quadVertices [[buffer(0)]],\n"
 "                            constant InstanceData *instances [[buffer(1)]],\n"
@@ -31,11 +36,13 @@ static NSString * const kSSKMetalShaderSource =
 "    float2 clip = float2((world.x / viewport.x) * 2.0 - 1.0,\n"
 "                         (world.y / viewport.y) * 2.0 - 1.0);\n"
 "    clip.y = -clip.y;\n"
-"    return float4(clip, 0.0, 1.0);\n"
+"    ParticleVertexOut out;\n"
+"    out.position = float4(clip, 0.0, 1.0);\n"
+"    out.color = data.color;\n"
+"    return out;\n"
 "}\n"
-"fragment float4 particleFragment(uint instanceID [[instance_id]],\n"
-"                                 constant InstanceData *instances [[buffer(1)]]) {\n"
-"    return instances[instanceID].color;\n"
+"fragment float4 particleFragment(ParticleVertexOut in [[stage_in]]) {\n"
+"    return in.color;\n"
 "}\n";
 
 typedef struct {
@@ -45,6 +52,18 @@ typedef struct {
     float length;
     vector_float4 color;
 } SSKMetalInstanceData;
+
+static NSString *SSKMetalParticleRendererLastErrorMessage = nil;
+
+static void SSKMetalParticleRendererSetLastErrorMessage(NSString *message) {
+    SSKMetalParticleRendererLastErrorMessage = [message copy];
+    if (message.length > 0 && [SSKDiagnostics isEnabled]) {
+        [SSKDiagnostics log:@"%@", message];
+    }
+    if (message.length > 0) {
+        NSLog(@"%@", message);
+    }
+}
 
 @interface SSKMetalParticleRenderer ()
 @property (nonatomic, weak) CAMetalLayer *layer;
@@ -60,18 +79,25 @@ typedef struct {
 @implementation SSKMetalParticleRenderer
 
 - (instancetype)initWithLayer:(CAMetalLayer *)layer {
+    SSKMetalParticleRendererSetLastErrorMessage(nil);
     NSParameterAssert(layer);
     if ((self = [super init])) {
         _layer = layer;
         _device = layer.device ?: MTLCreateSystemDefaultDevice();
-        if (!_device) { return nil; }
+        if (!_device) {
+            SSKMetalParticleRendererSetLastErrorMessage(@"SSKMetalParticleRenderer: no Metal device available during initialisation.");
+            return nil;
+        }
         if (!layer.device) {
             layer.device = _device;
         }
         layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
         layer.framebufferOnly = YES;
         _commandQueue = [_device newCommandQueue];
-        if (!_commandQueue) { return nil; }
+        if (!_commandQueue) {
+            SSKMetalParticleRendererSetLastErrorMessage(@"SSKMetalParticleRenderer: failed to create Metal command queue.");
+            return nil;
+        }
         _clearColor = MTLClearColorMake(0, 0, 0, 1);
         if (![self buildPipelinesWithDevice:_device] || ![self buildQuadBuffer]) {
             return nil;
@@ -86,12 +112,16 @@ typedef struct {
                                                   options:nil
                                                     error:&error];
     if (!library) {
+        SSKMetalParticleRendererSetLastErrorMessage([NSString stringWithFormat:@"SSKMetalParticleRenderer: failed to compile Metal shaders: %@", error.localizedDescription ?: @"unknown error"]);
         NSLog(@"SSKMetalParticleRenderer: failed to compile Metal shaders: %@", error);
         return NO;
     }
     id<MTLFunction> vertexFunc = [library newFunctionWithName:@"particleVertex"];
     id<MTLFunction> fragmentFunc = [library newFunctionWithName:@"particleFragment"];
-    if (!vertexFunc || !fragmentFunc) { return NO; }
+    if (!vertexFunc || !fragmentFunc) {
+        SSKMetalParticleRendererSetLastErrorMessage(@"SSKMetalParticleRenderer: missing shader functions in compiled library.");
+        return NO;
+    }
 
     MTLRenderPipelineDescriptor *descriptor = [MTLRenderPipelineDescriptor new];
     descriptor.vertexFunction = vertexFunc;
@@ -107,6 +137,7 @@ typedef struct {
 
     _alphaPipeline = [device newRenderPipelineStateWithDescriptor:descriptor error:&error];
     if (!_alphaPipeline) {
+        SSKMetalParticleRendererSetLastErrorMessage([NSString stringWithFormat:@"SSKMetalParticleRenderer: failed to create alpha pipeline: %@", error.localizedDescription ?: @"unknown error"]);
         NSLog(@"SSKMetalParticleRenderer: failed to create alpha pipeline: %@", error);
         return NO;
     }
@@ -117,6 +148,7 @@ typedef struct {
     descriptor.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOne;
     _additivePipeline = [device newRenderPipelineStateWithDescriptor:descriptor error:&error];
     if (!_additivePipeline) {
+        SSKMetalParticleRendererSetLastErrorMessage([NSString stringWithFormat:@"SSKMetalParticleRenderer: failed to create additive pipeline: %@", error.localizedDescription ?: @"unknown error"]);
         NSLog(@"SSKMetalParticleRenderer: failed to create additive pipeline: %@", error);
         return NO;
     }
@@ -134,7 +166,14 @@ typedef struct {
                                                  length:sizeof(quadVertices)
                                                 options:MTLResourceStorageModeShared];
     _instanceCapacity = 0;
+    if (!_quadVertexBuffer) {
+        SSKMetalParticleRendererSetLastErrorMessage(@"SSKMetalParticleRenderer: failed to create quad vertex buffer.");
+    }
     return _quadVertexBuffer != nil;
+}
+
++ (NSString *)lastCreationErrorMessage {
+    return SSKMetalParticleRendererLastErrorMessage;
 }
 
 - (void)ensureInstanceCapacity:(NSUInteger)count {
@@ -212,7 +251,6 @@ typedef struct {
     [encoder setRenderPipelineState:pipeline];
     [encoder setVertexBuffer:self.quadVertexBuffer offset:0 atIndex:0];
     [encoder setVertexBuffer:self.instanceBuffer offset:0 atIndex:1];
-    [encoder setFragmentBuffer:self.instanceBuffer offset:0 atIndex:1];
     vector_float2 viewportPoints = {(float)viewportSize.width, (float)viewportSize.height};
     [encoder setVertexBytes:&viewportPoints length:sizeof(vector_float2) atIndex:2];
     [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4 instanceCount:index];

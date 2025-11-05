@@ -14,6 +14,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// Returns nil when the supplied layer/device combo cannot compile shaders or pipelines.
 - (nullable instancetype)initWithLayer:(CAMetalLayer *)layer;
 
+/// Describes the most recent initialisation failure (if any). Cleared on successful init.
++ (nullable NSString *)lastCreationErrorMessage;
+
 /// Renders the provided particles. `viewportSize` should be in points (same coordinate
 /// system as the saver view). Returns YES when rendering succeeded.
 - (BOOL)renderParticles:(NSArray<SSKParticle *> *)particles
