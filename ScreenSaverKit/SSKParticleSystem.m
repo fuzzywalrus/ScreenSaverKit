@@ -215,6 +215,10 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     self.state->baseColor = value;
 }
 
+- (vector_float4)metalColorVector {
+    return self.state->color;
+}
+
 - (CGFloat)rotation {
     return self.state->rotation;
 }
@@ -293,6 +297,7 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
 @property (nonatomic, assign) NSUInteger capacity;
 @property (nonatomic, assign) SSKParticleState *states;
 @property (nonatomic, strong) NSMutableArray<SSKParticle *> *particles;
+@property (nonatomic, strong) NSMutableArray<SSKParticle *> *aliveScratch;
 @property (nonatomic, strong) NSMutableIndexSet *availableIndices;
 @property (nonatomic, strong) id<MTLDevice> metalDevice;
 @property (nonatomic, strong) id<MTLCommandQueue> commandQueue;
@@ -649,16 +654,20 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
 }
 
 - (NSArray<SSKParticle *> *)aliveParticlesSnapshot {
-    NSMutableArray<SSKParticle *> *alive = nil;
+    NSMutableArray<SSKParticle *> *alive = self.aliveScratch;
+    if (!alive) {
+        alive = [NSMutableArray arrayWithCapacity:MIN(self.capacity, (NSUInteger)64)];
+        self.aliveScratch = alive;
+    }
+    if (alive.count > 0) {
+        [alive removeAllObjects];
+    }
     for (SSKParticle *particle in self.particles) {
         if (particle.isAlive) {
-            if (!alive) {
-                alive = [NSMutableArray arrayWithCapacity:16];
-            }
             [alive addObject:particle];
         }
     }
-    return alive ?: @[];
+    return alive;
 }
 
 - (BOOL)renderWithMetalRenderer:(SSKMetalParticleRenderer *)renderer

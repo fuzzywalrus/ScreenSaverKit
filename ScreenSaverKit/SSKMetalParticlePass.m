@@ -85,12 +85,7 @@ typedef struct {
         data.width = width;
         data.length = width * 12.0f;
 
-        NSColor *color = particle.color ?: [NSColor whiteColor];
-        color = [color colorUsingColorSpace:[NSColorSpace extendedSRGBColorSpace]] ?: color;
-        data.color = (vector_float4){(float)color.redComponent,
-                                     (float)color.greenComponent,
-                                     (float)color.blueComponent,
-                                     (float)color.alphaComponent};
+        data.color = [particle metalColorVector];
         float softness = (float)particle.userScalar;
         if (!isfinite(softness) || softness < 0.0f) {
             softness = 0.0f;

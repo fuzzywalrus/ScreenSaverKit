@@ -1,4 +1,5 @@
 #import <AppKit/AppKit.h>
+#import <simd/simd.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -59,6 +60,8 @@ typedef void (^SSKParticleRenderer)(CGContextRef ctx, SSKParticle *particle);
 @property (nonatomic) CGFloat sizeVelocity;                     ///< Units per second applied to `size`.
 @property (nonatomic) SSKScalarRange sizeOverLifeRange;         ///< Multiplier range (start → end) for `SSKParticleBehaviorOptionFadeSize`.
 @property (nonatomic) SSKParticleBehaviorOptions behaviorOptions;
+
+- (vector_float4)metalColorVector;
 @end
 
 /// Lightweight particle system supporting additive and standard blending.
