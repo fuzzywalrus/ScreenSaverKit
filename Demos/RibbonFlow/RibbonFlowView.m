@@ -2,12 +2,14 @@
 
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
+#import <Metal/Metal.h>
 
 #import "RibbonFlowPalettes.h"
 
 #import "ScreenSaverKit/SSKColorUtilities.h"
 #import "ScreenSaverKit/SSKConfigurationWindowController.h"
 #import "ScreenSaverKit/SSKDiagnostics.h"
+#import "ScreenSaverKit/SSKMetalParticleRenderer.h"
 #import "ScreenSaverKit/SSKPaletteManager.h"
 #import "ScreenSaverKit/SSKParticleSystem.h"
 #import "ScreenSaverKit/SSKPreferenceBinder.h"
@@ -36,6 +38,9 @@ typedef struct {
 @property (nonatomic) CGFloat trailWidth;
 @property (nonatomic) BOOL additiveBlend;
 @property (nonatomic, copy) NSString *paletteIdentifier;
+@property (nonatomic) BOOL metalEnabled;
+@property (nonatomic, strong) CAMetalLayer *metalLayer;
+@property (nonatomic, strong) SSKMetalParticleRenderer *metalRenderer;
 @end
 
 @implementation RibbonFlowView
@@ -57,54 +62,33 @@ typedef struct {
         RibbonFlowRegisterPalettes();
         _emitters = [NSMutableArray array];
         _particleSystem = [[SSKParticleSystem alloc] initWithCapacity:2048];
-        __weak typeof(self) weakSelf = self;
-        _particleSystem.updateHandler = ^(SSKParticle *particle, NSTimeInterval dt) {
-            (void)dt;
-            CGFloat t = particle.life / MAX(0.0001, particle.maxLife);
-            CGFloat fade = 1.0 - t;
-            CGFloat baseSize = particle.userScalar;
-            particle.size = baseSize * (0.35 + 0.65 * fade);
-            NSColor *color = particle.color ?: [NSColor whiteColor];
-            particle.color = [color colorWithAlphaComponent:color.alphaComponent * fade];
-            if (weakSelf.additiveBlend) {
-                particle.damping = 0.18;
+        self.particleSystem.metalSimulationEnabled = NO;
+        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+        if (device) {
+            self.wantsLayer = YES;
+            CAMetalLayer *metalLayer = [CAMetalLayer layer];
+            metalLayer.device = device;
+            metalLayer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+            metalLayer.framebufferOnly = YES;
+            metalLayer.contentsScale = NSScreen.mainScreen ? NSScreen.mainScreen.backingScaleFactor : 1.0;
+            metalLayer.frame = self.bounds;
+            metalLayer.drawableSize = CGSizeMake(self.bounds.size.width * metalLayer.contentsScale,
+                                                 self.bounds.size.height * metalLayer.contentsScale);
+            metalLayer.backgroundColor = NSColor.blackColor.CGColor;
+            self.layer = metalLayer;
+            _metalLayer = metalLayer;
+            _metalRenderer = [[SSKMetalParticleRenderer alloc] initWithLayer:metalLayer];
+            self.metalEnabled = (_metalRenderer != nil);
+            if (!self.metalEnabled) {
+                self.layer = nil;
+                _metalLayer = nil;
+                _metalRenderer = nil;
             }
-        };
-        _particleSystem.renderHandler = ^(CGContextRef ctx, SSKParticle *particle) {
-            CGFloat t = particle.life / MAX(0.0001, particle.maxLife);
-            CGFloat fade = 1.0 - t;
-            CGFloat width = MAX(1.0, particle.size);
-            CGFloat length = width * (6.0 + 12.0 * fade);
-            NSPoint dir = particle.userVector;
-            if (SSKVectorLength(dir) < 0.0001) {
-                dir = NSMakePoint(1.0, 0.0);
-            }
-            CGFloat angle = atan2(dir.y, dir.x);
+        } else {
+            self.metalEnabled = NO;
+        }
 
-            NSColor *color = particle.color ?: [NSColor whiteColor];
-            CGFloat alpha = color.alphaComponent * fade;
-            NSColor *core = [color colorWithAlphaComponent:alpha];
-
-            CGColorRef glow = CGColorCreateCopyWithAlpha(core.CGColor, alpha * 0.75);
-            CGContextSaveGState(ctx);
-            CGContextTranslateCTM(ctx, particle.position.x, particle.position.y);
-            CGContextRotateCTM(ctx, angle);
-            if (glow) {
-                CGContextSetShadowWithColor(ctx, CGSizeZero, width * 0.9, glow);
-            }
-            CGRect rect = CGRectMake(-length * 0.5, -width * 0.5, length, width);
-            CGMutablePathRef path = CGPathCreateMutable();
-            CGPathAddRoundedRect(path, NULL, rect, width * 0.5, width * 0.5);
-            CGContextAddPath(ctx, path);
-            CGContextSetFillColorWithColor(ctx, core.CGColor);
-            CGContextFillPath(ctx);
-            CGPathRelease(path);
-            if (glow) {
-                CGContextSetShadowWithColor(ctx, CGSizeZero, 0.0, NULL);
-                CGColorRelease(glow);
-            }
-            CGContextRestoreGState(ctx);
-        };
+        [self configureParticleRenderHandler];
 
         NSDictionary *prefs = [self currentPreferences];
         NSSet *keys = [NSSet setWithArray:prefs.allKeys];
@@ -117,6 +101,17 @@ typedef struct {
 - (void)setFrame:(NSRect)frame {
     [super setFrame:frame];
     [self clampEmittersToBounds];
+    [self updateMetalSupportIfNeeded];
+}
+
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    [self updateMetalSupportIfNeeded];
+}
+
+- (void)layout {
+    [super layout];
+    [self updateMetalLayerDrawableSize];
 }
 
 - (void)rebuildEmitters {
@@ -153,10 +148,28 @@ typedef struct {
     self.particleSystem.blendMode = self.additiveBlend ? SSKParticleBlendModeAdditive : SSKParticleBlendModeAlpha;
     [self.particleSystem advanceBy:dt];
 
-    [self setNeedsDisplay:YES];
+    BOOL renderedWithMetal = NO;
+    if (self.metalEnabled && self.metalRenderer && self.metalLayer) {
+        [self updateMetalLayerDrawableSize];
+        renderedWithMetal = [self.particleSystem renderWithMetalRenderer:self.metalRenderer
+                                                               blendMode:(self.additiveBlend ? SSKParticleBlendModeAdditive : SSKParticleBlendModeAlpha)
+                                                            viewportSize:self.bounds.size];
+        if (!renderedWithMetal) {
+            self.metalEnabled = NO;
+            self.metalRenderer = nil;
+            self.metalLayer = nil;
+            self.layer = nil;
+            [self configureParticleRenderHandler];
+        }
+    }
+
+    if (!renderedWithMetal) {
+        [self setNeedsDisplay:YES];
+    }
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
+    if (self.metalEnabled && self.metalRenderer) { return; }
     [[NSColor blackColor] setFill];
     NSRectFill(dirtyRect);
 
@@ -254,9 +267,11 @@ typedef struct {
         particle.color = color;
         CGFloat sizeBase = self.trailWidth * (10.0 + ((CGFloat)arc4random() / UINT32_MAX) * 6.0);
         particle.size = sizeBase;
+        particle.baseSize = sizeBase;
         particle.userScalar = sizeBase;
         particle.userVector = unitDir;
-        particle.damping = 0.15;
+        particle.sizeOverLifeRange = SSKScalarRangeMake(1.0, 0.35);
+        particle.behaviorOptions = (SSKParticleBehaviorOptionFadeAlpha | SSKParticleBehaviorOptionFadeSize);
     }];
 }
 
@@ -269,6 +284,71 @@ typedef struct {
 - (NSPoint)randomUnitVector {
     CGFloat angle = ((CGFloat)arc4random() / UINT32_MAX) * (CGFloat)(M_PI * 2.0);
     return NSMakePoint(cos(angle), sin(angle));
+}
+
+- (void)configureParticleRenderHandler {
+    __weak typeof(self) weakSelf = self;
+    if (self.metalEnabled) {
+        self.particleSystem.renderHandler = nil;
+        return;
+    }
+    self.particleSystem.renderHandler = ^(CGContextRef ctx, SSKParticle *particle) {
+        CGFloat t = particle.life / MAX(0.0001, particle.maxLife);
+        CGFloat fade = 1.0 - t;
+        CGFloat width = MAX(1.0, particle.size);
+        CGFloat length = width * (6.0 + 12.0 * fade);
+        NSPoint dir = particle.userVector;
+        if (SSKVectorLength(dir) < 0.0001) {
+            dir = [weakSelf randomUnitVector];
+        }
+        CGFloat angle = atan2(dir.y, dir.x);
+
+        NSColor *color = particle.color ?: [NSColor whiteColor];
+        CGFloat alpha = color.alphaComponent * fade;
+        NSColor *core = [color colorWithAlphaComponent:alpha];
+
+        CGColorRef glow = CGColorCreateCopyWithAlpha(core.CGColor, alpha * 0.75);
+        CGContextSaveGState(ctx);
+        CGContextTranslateCTM(ctx, particle.position.x, particle.position.y);
+        CGContextRotateCTM(ctx, angle);
+        if (glow) {
+            CGContextSetShadowWithColor(ctx, CGSizeZero, width * 0.9, glow);
+        }
+        CGRect rect = CGRectMake(-length * 0.5, -width * 0.5, length, width);
+        CGMutablePathRef path = CGPathCreateMutable();
+        CGPathAddRoundedRect(path, NULL, rect, width * 0.5, width * 0.5);
+        CGContextAddPath(ctx, path);
+        CGContextSetFillColorWithColor(ctx, core.CGColor);
+        CGContextFillPath(ctx);
+        CGPathRelease(path);
+        if (glow) {
+            CGContextSetShadowWithColor(ctx, CGSizeZero, 0.0, NULL);
+            CGColorRelease(glow);
+        }
+        CGContextRestoreGState(ctx);
+    };
+}
+
+- (void)updateMetalSupportIfNeeded {
+    if (!self.metalEnabled || !self.metalLayer) { return; }
+    if (self.layer != self.metalLayer) {
+        self.layer = self.metalLayer;
+    }
+    [self updateMetalLayerDrawableSize];
+}
+
+- (void)updateMetalLayerDrawableSize {
+    if (!self.metalEnabled || !self.metalLayer) { return; }
+    CGFloat scale = 1.0;
+    if (self.window) {
+        scale = self.window.backingScaleFactor;
+    } else if (NSScreen.mainScreen) {
+        scale = NSScreen.mainScreen.backingScaleFactor;
+    }
+    self.metalLayer.contentsScale = scale;
+    self.metalLayer.frame = self.bounds;
+    self.metalLayer.drawableSize = CGSizeMake(self.bounds.size.width * scale,
+                                              self.bounds.size.height * scale);
 }
 
 - (BOOL)hasConfigureSheet {
@@ -432,11 +512,14 @@ typedef struct {
         [preferences[kPrefAdditiveBlend] boolValue] :
         [defaults[kPrefAdditiveBlend] boolValue];
     self.additiveBlend = additive;
+    self.particleSystem.globalDamping = additive ? 0.18 : 0.15;
 
     if (newEmitterCount != self.emitterCount || (changedKeys && [changedKeys containsObject:kPrefEmitterCount])) {
         self.emitterCount = newEmitterCount;
         [self rebuildEmitters];
     }
+
+    [self configureParticleRenderHandler];
 }
 
 @end

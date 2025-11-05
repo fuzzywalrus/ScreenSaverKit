@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make:*)",
+      "Read(//System/Library/Frameworks/CoreServices.framework/**)",
+      "Bash(./scripts/refresh-screensaver-services.sh:*)",
+      "Bash(/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -kill -r -seed -lint -domain local -domain system -domain user)",
+      "Bash(killall:*)",
+      "Bash(open -a \"System Settings\")"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

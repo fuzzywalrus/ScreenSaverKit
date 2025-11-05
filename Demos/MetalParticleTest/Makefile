@@ -3,9 +3,9 @@ KIT_DIR := $(abspath $(CURRENT_DIR)/../..)
 KIT_SOURCE_DIR := $(KIT_DIR)/ScreenSaverKit
 KIT_INCLUDE := -I$(KIT_DIR)
 
-SCREENSAVER_NAME ?= RibbonFlowSaver
-BUNDLE_ID ?= com.example.screenSaverKit.ribbonflow
-PRINCIPAL_CLASS ?= RibbonFlowView
+SCREENSAVER_NAME ?= MetalParticleTestSaver
+BUNDLE_ID ?= com.example.screenSaverKit.metalParticleTest
+PRINCIPAL_CLASS ?= MetalParticleTestView
 BUILD_DIR ?= $(CURRENT_DIR)/Build
 
 BUNDLE_DIR := $(BUILD_DIR)/$(SCREENSAVER_NAME).saver
@@ -21,19 +21,13 @@ LDFLAGS := -Wl,-dead_strip
 FRAMEWORKS := -framework Cocoa -framework ScreenSaver -framework QuartzCore -framework Metal
 
 SOURCES := \
-	$(CURRENT_DIR)/RibbonFlowView.m \
-	$(CURRENT_DIR)/RibbonFlowPalettes.m \
+	$(CURRENT_DIR)/MetalParticleTestView.m \
 	$(KIT_SOURCE_DIR)/SSKScreenSaverView.m \
 	$(KIT_SOURCE_DIR)/SSKAssetManager.m \
 	$(KIT_SOURCE_DIR)/SSKAnimationClock.m \
 	$(KIT_SOURCE_DIR)/SSKEntityPool.m \
 	$(KIT_SOURCE_DIR)/SSKScreenUtilities.m \
 	$(KIT_SOURCE_DIR)/SSKDiagnostics.m \
-	$(KIT_SOURCE_DIR)/SSKPreferenceBinder.m \
-	$(KIT_SOURCE_DIR)/SSKConfigurationWindowController.m \
-	$(KIT_SOURCE_DIR)/SSKColorPalette.m \
-	$(KIT_SOURCE_DIR)/SSKPaletteManager.m \
-	$(KIT_SOURCE_DIR)/SSKColorUtilities.m \
 	$(KIT_SOURCE_DIR)/SSKParticleSystem.m \
 	$(KIT_SOURCE_DIR)/SSKMetalParticleRenderer.m
 

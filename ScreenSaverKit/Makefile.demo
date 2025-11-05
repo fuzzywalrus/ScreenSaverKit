@@ -18,7 +18,7 @@ CC := clang
 CFLAGS := -Wall -Wextra -O2 -fobjc-arc -fmodules -arch arm64 -arch x86_64 \
 	-fmodules-cache-path=$(MODULE_CACHE_DIR)
 LDFLAGS := -Wl,-dead_strip
-FRAMEWORKS := -framework Cocoa -framework ScreenSaver -framework QuartzCore
+FRAMEWORKS := -framework Cocoa -framework ScreenSaver -framework QuartzCore -framework Metal
 
 # Add your own source files here. Keep SSKScreenSaverView.m in the list.
 SOURCES := \
@@ -34,7 +34,8 @@ SOURCES := \
 	SSKColorPalette.m \
 	SSKPaletteManager.m \
 	SSKColorUtilities.m \
-	SSKParticleSystem.m
+	SSKParticleSystem.m \
+	SSKMetalParticleRenderer.m
 
 INFO_PLIST ?= $(KIT_DIR)/TemplateInfo.plist
 EXECUTABLE := $(MACOS_DIR)/$(SCREENSAVER_NAME)

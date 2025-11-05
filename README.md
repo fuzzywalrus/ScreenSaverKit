@@ -78,7 +78,8 @@ Keeping these concerns in one place lets each screensaver focus on drawing and b
 - `SSKColorPalette` + `SSKPaletteManager` – shared palette definitions with interpolation helpers and registration per saver module.
 - `SSKColorUtilities` – convenience serializers/deserializers for storing `NSColor` instances inside `ScreenSaverDefaults`.
 - `SSKVectorMath` – small collection of inline NSPoint helpers (add, scale, reflect, clamp) for animation math.
-- `SSKParticleSystem` – lightweight additive/alpha particle engine suitable for bloom/glow effects and classic spark trails.
+- `SSKParticleSystem` – lightweight additive/alpha particle engine with optional Metal-accelerated simulation for bloom/glow effects and classic spark trails. See `ScreenSaverKit/SSKParticleSystem.md` for a quick-start and behaviour reference.
+- `SSKMetalParticleRenderer` – optional helper that lets particle systems draw through Metal when a saver provides a `CAMetalLayer`.
 
 ## Starter template
 
@@ -96,6 +97,7 @@ Keeping these concerns in one place lets each screensaver focus on drawing and b
   `make -f Demos/SimpleLines/Makefile`.
 - `Demos/DVDlogo/` – retro floating DVD logo with solid or rotating palette colour modes, adjustable size, speed, colour cycling, and optional random start behaviour. It also uses a multi-file project structure to demo a more advanced project structure. Build it via  `make -f Demos/DVDlogo/Makefile`.
 - `Demos/RibbonFlow/` – flowing additive ribbons inspired by the classic Apple Flurry screensaver. Build it via `make -f Demos/RibbonFlow/Makefile`.
+- `Demos/MetalParticleTest/` – a minimal particle fountain that flips automatically between Metal and CPU rendering, handy when verifying GPU availability or the bundled Metal particle renderer. Build it via `make -f Demos/MetalParticleTest/Makefile`.
 - `scripts/install-and-refresh.sh` – convenience script that builds, installs, and restarts the relevant macOS services (`legacyScreenSaver`, `WallpaperAgent`, `ScreenSaverEngine`) so macOS immediately sees your latest bundle. Usage:
 
   ```bash

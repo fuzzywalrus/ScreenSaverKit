@@ -85,9 +85,6 @@ typedef NS_ENUM(NSUInteger, DVDBrandColorMode) {
         _bounceParticlesEnabled = [defaults[DVDLogoPreferenceKeyBounceParticles] boolValue];
         _particleSystem = [[SSKParticleSystem alloc] initWithCapacity:256];
         _particleSystem.blendMode = SSKParticleBlendModeAdditive;
-        _particleSystem.updateHandler = ^(SSKParticle *particle, NSTimeInterval dt) {
-            particle.size += 20.0 * dt;
-        };
         [self loadLogoImage];
         [self resetInitialState];
         NSDictionary *prefs = [self currentPreferences];
@@ -284,6 +281,7 @@ typedef NS_ENUM(NSUInteger, DVDBrandColorMode) {
         CGFloat speed = 90.0 + ((CGFloat)arc4random() / UINT32_MAX) * 140.0;
         particle.velocity = NSMakePoint(cos(angle) * speed, sin(angle) * speed);
         particle.size = 3.0 + ((CGFloat)arc4random() / UINT32_MAX) * 4.0;
+        particle.sizeVelocity = 20.0;
         particle.color = baseColor;
         particle.damping = 0.45;
         particle.rotationVelocity = (((CGFloat)arc4random() / UINT32_MAX) - 0.5f) * 3.0f;
