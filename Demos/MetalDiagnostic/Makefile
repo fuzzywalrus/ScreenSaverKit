@@ -13,6 +13,9 @@ CONTENTS_DIR := $(BUNDLE_DIR)/Contents
 MACOS_DIR := $(CONTENTS_DIR)/MacOS
 RESOURCES_DIR := $(CONTENTS_DIR)/Resources
 MODULE_CACHE_DIR := $(BUILD_DIR)/ModuleCache
+THUMBNAIL_SRC := $(KIT_DIR)/documentation-src/thumbnail.png
+THUMBNAIL_PNG := $(RESOURCES_DIR)/thumbnail.png
+THUMBNAIL_PNG_2X := $(RESOURCES_DIR)/thumbnail@2x.png
 
 CC := clang
 CFLAGS := -Wall -Wextra -O2 -fobjc-arc -fmodules -arch arm64 -arch x86_64 \
@@ -34,7 +37,7 @@ EXECUTABLE := $(MACOS_DIR)/$(SCREENSAVER_NAME)
 
 .PHONY: all clean install run
 
-all: $(EXECUTABLE)
+all: $(EXECUTABLE) $(THUMBNAIL_PNG) $(THUMBNAIL_PNG_2X)
 
 $(EXECUTABLE): $(SOURCES) $(CONTENTS_DIR)/Info.plist | $(MACOS_DIR)
 	@mkdir -p $(MODULE_CACHE_DIR)
@@ -49,6 +52,12 @@ $(CONTENTS_DIR)/Info.plist: $(INFO_PLIST) | $(MACOS_DIR)
 $(MACOS_DIR):
 	@mkdir -p $(MACOS_DIR)
 	@mkdir -p $(RESOURCES_DIR)
+
+$(THUMBNAIL_PNG): $(THUMBNAIL_SRC) | $(MACOS_DIR)
+	cp "$<" "$@"
+
+$(THUMBNAIL_PNG_2X): $(THUMBNAIL_SRC) | $(MACOS_DIR)
+	sips -s format png -Z 360 "$<" --out "$@" >/dev/null
 
 clean:
 	rm -rf "$(BUILD_DIR)"
