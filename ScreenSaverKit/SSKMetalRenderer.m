@@ -73,11 +73,13 @@ NSString * const SSKMetalEffectIdentifierColorGrading = @"com.ssk.effects.colorg
             _blurPass = nil;
         }
         _bloomPass = [[SSKMetalBloomPass alloc] init];
-        if (![_bloomPass setupWithDevice:device library:_shaderLibrary blurPass:_blurPass]) {
+        if (![_bloomPass setupWithDevice:device library:_shaderLibrary]) {
             if ([SSKDiagnostics isEnabled]) {
                 [SSKDiagnostics log:@"SSKMetalRenderer: bloom pass unavailable (continuing without bloom support)."];
             }
             _bloomPass = nil;
+        } else {
+            [_bloomPass setSharedBlurPass:_blurPass];
         }
         [self configureDefaultEffectStages];
         _particleBlurRadius = 0.0;
@@ -250,6 +252,20 @@ NSString * const SSKMetalEffectIdentifierColorGrading = @"com.ssk.effects.colorg
         self.effectRegistry = [[NSMutableDictionary alloc] init];
     }
     self.effectRegistry[stage.identifier] = stage;
+    if ([stage.identifier isEqualToString:SSKMetalEffectIdentifierBlur]) {
+        if ([stage.pass isKindOfClass:[SSKMetalBlurPass class]]) {
+            [self.bloomPass setSharedBlurPass:(SSKMetalBlurPass *)stage.pass];
+        }
+    } else if ([stage.identifier isEqualToString:SSKMetalEffectIdentifierBloom]) {
+        if ([stage.pass isKindOfClass:[SSKMetalBloomPass class]]) {
+            SSKMetalEffectStage *blurStage = [self effectStageWithIdentifier:SSKMetalEffectIdentifierBlur];
+            if ([blurStage.pass isKindOfClass:[SSKMetalBlurPass class]]) {
+                [(SSKMetalBloomPass *)stage.pass setSharedBlurPass:(SSKMetalBlurPass *)blurStage.pass];
+            } else if (self.blurPass) {
+                [(SSKMetalBloomPass *)stage.pass setSharedBlurPass:self.blurPass];
+            }
+        }
+    }
 }
 
 - (void)unregisterEffectStageWithIdentifier:(NSString *)identifier {
@@ -257,6 +273,9 @@ NSString * const SSKMetalEffectIdentifierColorGrading = @"com.ssk.effects.colorg
         return;
     }
     [self.effectRegistry removeObjectForKey:identifier];
+    if ([identifier isEqualToString:SSKMetalEffectIdentifierBlur]) {
+        [self.bloomPass setSharedBlurPass:nil];
+    }
 }
 
 - (SSKMetalEffectStage *)effectStageWithIdentifier:(NSString *)identifier {

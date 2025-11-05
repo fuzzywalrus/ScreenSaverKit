@@ -87,6 +87,8 @@ Keeping these concerns in one place lets each screensaver focus on drawing and b
 - `SSKVectorMath` – small collection of inline NSPoint helpers (add, scale, reflect, clamp) for animation math.
 - `SSKParticleSystem` – lightweight particle engine with CPU and Metal-accelerated rendering modes. Supports additive/alpha blending, automatic fade behaviors, and custom per-particle rendering callbacks. Ideal for sparks, trails, explosions, and flowing ribbon effects. See `ScreenSaverKit/SSKParticleSystem.md` for detailed documentation.
 - `SSKMetalParticleRenderer` – hardware-accelerated particle renderer using Metal. Automatically handles GPU pipeline setup, drawable management, and instanced rendering for high-performance particle effects.
+- `SSKMetalRenderer` + `SSKMetalEffectStage` – extensible Metal post-processing effect system. Register custom effect passes (blur, bloom, color grading, etc.) without modifying framework code. Supports dynamic effect chains with configurable parameters. Built-in blur and bloom effects included. See `ScreenSaverKit/EFFECT_IMPLEMENTATION_GUIDE.md` for detailed documentation on creating custom Metal shader effects.
+- `SSKMetalRenderDiagnostics` – real-time Metal rendering diagnostics overlay. Tracks rendering success/failure rates, displays device/layer/renderer status, and shows FPS. Automatically renders a semi-transparent overlay on your CAMetalLayer for debugging Metal pipeline issues. Perfect for development and troubleshooting GPU initialization problems. See `Demos/MetalParticleTest/` for usage example.
 
 ## Using Metal-Accelerated Particles
 
@@ -125,6 +127,53 @@ self.metalRenderer = [[SSKMetalParticleRenderer alloc] initWithLayer:metalLayer]
 **Automatic CPU Fallback:** If Metal initialization fails or the renderer returns `NO`, the particle system automatically falls back to CPU rendering via `drawInContext:` in your `drawRect:` method.
 
 See `Demos/RibbonFlow/` for a complete working example, and `ScreenSaverKit/SSKParticleSystem.md` for detailed API documentation.
+
+### Debugging Metal Rendering
+
+For troubleshooting Metal rendering issues, use `SSKMetalRenderDiagnostics`:
+
+```objective-c
+// Create diagnostics helper
+self.renderDiagnostics = [[SSKMetalRenderDiagnostics alloc] init];
+
+// Attach to your Metal layer
+[self.renderDiagnostics attachToMetalLayer:self.metalLayer];
+
+// Update status as you initialize components
+self.renderDiagnostics.deviceStatus = [NSString stringWithFormat:@"Device: %@", device.name];
+self.renderDiagnostics.layerStatus = @"Layer: configured";
+self.renderDiagnostics.rendererStatus = @"Renderer: ready";
+
+// In animateOneFrame, record rendering attempts
+BOOL renderSuccess = [self.particleSystem renderWithMetalRenderer:self.metalRenderer
+                                                         blendMode:self.particleSystem.blendMode
+                                                      viewportSize:self.bounds.size];
+[self.renderDiagnostics recordMetalAttemptWithSuccess:renderSuccess];
+
+// Update overlay with custom info
+NSArray *extraInfo = @[
+    [NSString stringWithFormat:@"Particles: %lu", self.particleSystem.aliveParticleCount]
+];
+[self.renderDiagnostics updateOverlayWithTitle:@"My Saver"
+                                    extraLines:extraInfo
+                               framesPerSecond:self.animationClock.framesPerSecond];
+```
+
+The diagnostics overlay displays:
+- **Device**: Metal device name and capabilities (e.g., "Apple M1", low power status)
+- **Layer**: CAMetalLayer configuration status
+- **Renderer**: SSKMetalRenderer initialization state
+- **Drawable**: Drawable availability and acquisition success
+- **Metal successes / fallbacks**: Running counter of rendering attempts
+- **FPS**: Current frame rate
+
+Toggle the overlay on/off with:
+```objective-c
+self.renderDiagnostics.overlayEnabled = NO;  // Hide overlay
+self.renderDiagnostics.overlayEnabled = YES; // Show overlay (default)
+```
+
+See `Demos/MetalParticleTest/` for a complete diagnostic implementation example, or `Demos/MetalDiagnostic/` for a low-level Metal sanity checker that tests device, layer, and drawable initialization.
 
 ## Starter template
 

@@ -8,6 +8,7 @@
 #import "ScreenSaverKit/SSKDiagnostics.h"
 #import "ScreenSaverKit/SSKParticleSystem.h"
 #import "ScreenSaverKit/SSKMetalParticleRenderer.h"
+#import "ScreenSaverKit/SSKMetalRenderDiagnostics.h"
 
 static inline CGFloat SSKRandomUnit(void) {
     return (CGFloat)arc4random() / (CGFloat)UINT32_MAX;
@@ -20,20 +21,13 @@ static const NSUInteger kMetalParticleTestBuildNumber = 4;
 @property (nonatomic, strong) id<MTLDevice> metalDevice;
 @property (nonatomic, strong) CAMetalLayer *metalLayer;
 @property (nonatomic, strong) SSKMetalParticleRenderer *metalRenderer;
-@property (nonatomic, strong) CATextLayer *statusLayer;
+@property (nonatomic, strong) SSKMetalRenderDiagnostics *renderDiagnostics;
 
 @property (nonatomic) BOOL metalRenderingActive;
 @property (nonatomic) BOOL awaitingMetalDrawable;
 @property (nonatomic) double spawnAccumulator;
 @property (nonatomic) NSUInteger frameCount;
-@property (nonatomic) NSUInteger metalRenderSuccessCount;
-@property (nonatomic) NSUInteger metalRenderFailureCount;
-
-@property (nonatomic, copy) NSString *deviceStatus;
-@property (nonatomic, copy) NSString *layerStatus;
-@property (nonatomic, copy) NSString *rendererStatus;
-@property (nonatomic, copy) NSString *drawableStatus;
-@property (nonatomic, copy) NSString *overlayString;
+@property (nonatomic, copy) NSString *cachedOverlayString;
 
 @property (nonatomic) BOOL attemptedDeviceCreation;
 @property (nonatomic) BOOL loggedNoDevice;
@@ -53,11 +47,12 @@ static const NSUInteger kMetalParticleTestBuildNumber = 4;
         _particleSystem.globalDamping = 0.92;
         _particleSystem.gravity = NSZeroPoint;
 
-        _deviceStatus = @"Device: not requested";
-        _layerStatus = @"Layer: waiting for device";
-        _rendererStatus = @"Renderer: waiting for layer";
-        _drawableStatus = @"Drawable: not attempted";
-        _overlayString = @"Metal Particle Test – awaiting status…";
+        _renderDiagnostics = [[SSKMetalRenderDiagnostics alloc] init];
+        _renderDiagnostics.deviceStatus = @"Device: not requested";
+        _renderDiagnostics.layerStatus = @"Layer: waiting for device";
+        _renderDiagnostics.rendererStatus = @"Renderer: waiting for layer";
+        _renderDiagnostics.drawableStatus = @"Drawable: not attempted";
+        _cachedOverlayString = @"Metal Particle Test – awaiting status…";
 
         [SSKDiagnostics setEnabled:YES];
     }
@@ -85,7 +80,7 @@ static const NSUInteger kMetalParticleTestBuildNumber = 4;
 - (void)layout {
     [super layout];
     [self updateMetalGeometry];
-    [self layoutStatusLayer];
+    [self updateOverlayText];
 }
 
 - (void)animateOneFrame {
@@ -114,11 +109,10 @@ static const NSUInteger kMetalParticleTestBuildNumber = 4;
                                                                blendMode:self.particleSystem.blendMode
                                                             viewportSize:self.bounds.size];
         if (renderedWithMetal) {
-            self.metalRenderSuccessCount += 1;
+            [self.renderDiagnostics recordMetalAttemptWithSuccess:YES];
             self.metalRenderingActive = YES;
-            self.metalRenderFailureCount = 0;
-            self.drawableStatus = [NSString stringWithFormat:@"Drawable: ok (successes %lu)",
-                                   (unsigned long)self.metalRenderSuccessCount];
+            self.renderDiagnostics.drawableStatus = [NSString stringWithFormat:@"Drawable: ok (successes %lu)",
+                                                     (unsigned long)self.renderDiagnostics.metalSuccessCount];
             if (!self.loggedFirstDrawableSuccess) {
                 self.loggedFirstDrawableSuccess = YES;
                 [SSKDiagnostics log:@"MetalParticleTest: received first successful Metal frame."];
@@ -126,38 +120,38 @@ static const NSUInteger kMetalParticleTestBuildNumber = 4;
         } else {
             self.awaitingMetalDrawable = YES;
             self.metalRenderingActive = NO;
-            self.metalRenderFailureCount += 1;
-            self.drawableStatus = [NSString stringWithFormat:@"Drawable: renderer returned NO (failures %lu)",
-                                   (unsigned long)self.metalRenderFailureCount];
-            if (!self.loggedDrawableFailure || (self.metalRenderFailureCount % 60 == 0)) {
+            [self.renderDiagnostics recordMetalAttemptWithSuccess:NO];
+            self.renderDiagnostics.drawableStatus = [NSString stringWithFormat:@"Drawable: renderer returned NO (failures %lu)",
+                                                     (unsigned long)self.renderDiagnostics.metalFailureCount];
+            if (!self.loggedDrawableFailure || (self.renderDiagnostics.metalFailureCount % 60 == 0)) {
                 self.loggedDrawableFailure = YES;
                 [SSKDiagnostics log:@"MetalParticleTest: renderWithMetalRenderer returned NO (failure count %lu).",
-                 (unsigned long)self.metalRenderFailureCount];
+                 (unsigned long)self.renderDiagnostics.metalFailureCount];
             }
         }
     } else if (self.metalDevice && !self.metalRenderer) {
         self.metalRenderingActive = NO;
-        self.drawableStatus = @"Drawable: skipped (renderer unavailable)";
+        self.renderDiagnostics.drawableStatus = @"Drawable: skipped (renderer unavailable)";
     } else if (!self.metalDevice) {
         self.metalRenderingActive = NO;
-        self.drawableStatus = @"Drawable: skipped (no Metal device)";
+        self.renderDiagnostics.drawableStatus = @"Drawable: skipped (no Metal device)";
     } else {
         self.metalRenderingActive = NO;
-        self.drawableStatus = @"Drawable: skipped (no Metal layer)";
+        self.renderDiagnostics.drawableStatus = @"Drawable: skipped (no Metal layer)";
     }
 
     if (renderedWithMetal) {
-        self.rendererStatus = @"Renderer: active (Metal)";
+        self.renderDiagnostics.rendererStatus = @"Renderer: active (Metal)";
     } else if (attemptedMetalRender) {
-        self.rendererStatus = self.awaitingMetalDrawable ?
+        self.renderDiagnostics.rendererStatus = self.awaitingMetalDrawable ?
             @"Renderer: waiting for drawable (CPU fallback this frame)" :
             @"Renderer: attempted Metal path (CPU fallback this frame)";
     } else if (self.metalDevice && self.metalLayer && !self.metalRenderer) {
-        self.rendererStatus = @"Renderer: failed to initialise";
+        self.renderDiagnostics.rendererStatus = @"Renderer: failed to initialise";
     } else if (!self.metalDevice) {
-        self.rendererStatus = @"Renderer: waiting for Metal device";
+        self.renderDiagnostics.rendererStatus = @"Renderer: waiting for Metal device";
     } else {
-        self.rendererStatus = @"Renderer: waiting for layer";
+        self.renderDiagnostics.rendererStatus = @"Renderer: waiting for layer";
     }
 
     if (!renderedWithMetal) {
@@ -182,7 +176,8 @@ static const NSUInteger kMetalParticleTestBuildNumber = 4;
 
     [self.particleSystem drawInContext:ctx];
 
-    NSArray<NSString *> *lines = [self.overlayString componentsSeparatedByString:@"\n"];
+    NSString *overlay = self.cachedOverlayString ?: @"Metal Particle Test – diagnostics unavailable";
+    NSArray<NSString *> *lines = [overlay componentsSeparatedByString:@"\n"];
     NSDictionary *attrs = @{
         NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightRegular],
         NSForegroundColorAttributeName: [NSColor colorWithCalibratedWhite:0.95 alpha:1.0]
@@ -220,7 +215,7 @@ static const NSUInteger kMetalParticleTestBuildNumber = 4;
 
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     if (!device) {
-        self.deviceStatus = @"Device: unavailable (MTLCreateSystemDefaultDevice returned nil)";
+        self.renderDiagnostics.deviceStatus = @"Device: unavailable (MTLCreateSystemDefaultDevice returned nil)";
         if (!self.loggedNoDevice) {
             self.loggedNoDevice = YES;
             [SSKDiagnostics log:@"MetalParticleTest: no Metal device available (MTLCreateSystemDefaultDevice returned nil)."];
@@ -229,7 +224,7 @@ static const NSUInteger kMetalParticleTestBuildNumber = 4;
     }
 
     self.metalDevice = device;
-    self.deviceStatus = [NSString stringWithFormat:@"Device: %@ (lowPower=%@ removable=%@)",
+    self.renderDiagnostics.deviceStatus = [NSString stringWithFormat:@"Device: %@ (lowPower=%@ removable=%@)",
                          device.name,
                          device.isLowPower ? @"YES" : @"NO",
                          device.isRemovable ? @"YES" : @"NO"];
@@ -238,11 +233,11 @@ static const NSUInteger kMetalParticleTestBuildNumber = 4;
 
 - (void)ensureMetalLayer {
     if (!self.metalDevice) {
-        self.layerStatus = @"Layer: waiting for Metal device";
+        self.renderDiagnostics.layerStatus = @"Layer: waiting for Metal device";
         return;
     }
     if (!self.window) {
-        self.layerStatus = @"Layer: waiting for window attachment";
+        self.renderDiagnostics.layerStatus = @"Layer: waiting for window attachment";
         return;
     }
     if (self.metalLayer) { return; }
@@ -268,26 +263,26 @@ static const NSUInteger kMetalParticleTestBuildNumber = 4;
         self.layerContentsRedrawPolicy = NSViewLayerContentsRedrawNever;
     }
     self.metalLayer = layer;
-    self.layerStatus = @"Layer: created and attached";
+    self.renderDiagnostics.layerStatus = @"Layer: created and attached";
     if (!self.loggedLayerCreation) {
         self.loggedLayerCreation = YES;
         [SSKDiagnostics log:@"MetalParticleTest: created CAMetalLayer and attached to view."];
     }
 
-    [self ensureStatusLayer];
+    [self.renderDiagnostics attachToMetalLayer:self.metalLayer];
 }
 
 - (void)ensureMetalRenderer {
     if (!self.metalLayer || self.metalRenderer) { return; }
 
-    self.rendererStatus = @"Renderer: initialising…";
+    self.renderDiagnostics.rendererStatus = @"Renderer: initialising…";
     SSKMetalParticleRenderer *renderer = [[SSKMetalParticleRenderer alloc] initWithLayer:self.metalLayer];
     if (!renderer) {
         NSString *errorMessage = [SSKMetalParticleRenderer lastCreationErrorMessage];
         if (errorMessage.length == 0) {
             errorMessage = @"unknown error";
         }
-        self.rendererStatus = [NSString stringWithFormat:@"Renderer: failed to initialise (%@)", errorMessage];
+        self.renderDiagnostics.rendererStatus = [NSString stringWithFormat:@"Renderer: failed to initialise (%@)", errorMessage];
         if (!self.loggedRendererCreationFailure) {
             self.loggedRendererCreationFailure = YES;
             [SSKDiagnostics log:@"MetalParticleTest: failed to initialise SSKMetalParticleRenderer (see console for shader errors)."];
@@ -296,7 +291,7 @@ static const NSUInteger kMetalParticleTestBuildNumber = 4;
     }
 
     self.metalRenderer = renderer;
-    self.rendererStatus = @"Renderer: initialised";
+    self.renderDiagnostics.rendererStatus = @"Renderer: initialised";
 }
 
 - (CGFloat)currentContentsScale {
@@ -313,67 +308,32 @@ static const NSUInteger kMetalParticleTestBuildNumber = 4;
     if (!self.metalLayer) { return; }
     CGFloat scale = [self currentContentsScale];
     self.metalLayer.contentsScale = scale;
-    self.metalLayer.frame = self.bounds;
+   self.metalLayer.frame = self.bounds;
     self.metalLayer.drawableSize = CGSizeMake(NSWidth(self.bounds) * scale,
                                               NSHeight(self.bounds) * scale);
-    self.layerStatus = [NSString stringWithFormat:@"Layer: attached (drawable %.0fx%.0f @ scale %.2f)",
-                        self.metalLayer.drawableSize.width,
-                        self.metalLayer.drawableSize.height,
-                        scale];
-    if (self.statusLayer) {
-        self.statusLayer.contentsScale = scale;
-        [self layoutStatusLayer];
-    }
-}
-
-- (void)ensureStatusLayer {
-    if (!self.metalLayer || self.statusLayer) { return; }
-
-    CATextLayer *text = [CATextLayer layer];
-    text.alignmentMode = kCAAlignmentLeft;
-    text.foregroundColor = [NSColor colorWithCalibratedWhite:0.95 alpha:1.0].CGColor;
-    text.backgroundColor = [NSColor colorWithCalibratedWhite:0 alpha:0.55].CGColor;
-    text.cornerRadius = 8.0;
-    text.masksToBounds = YES;
-    text.contentsScale = [self currentContentsScale];
-    text.font = (__bridge CFTypeRef)[NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightRegular];
-    text.fontSize = 12.0;
-    [self.metalLayer addSublayer:text];
-    self.statusLayer = text;
-    [self layoutStatusLayer];
-}
-
-- (void)layoutStatusLayer {
-    if (!self.statusLayer) { return; }
-    CGFloat width = MIN(self.bounds.size.width - 32.0, 520.0);
-    CGFloat height = 160.0;
-    self.statusLayer.frame = CGRectMake(18.0,
-                                        self.bounds.size.height - height - 18.0,
-                                        width,
-                                        height);
+    self.renderDiagnostics.layerStatus = [NSString stringWithFormat:@"Layer: attached (drawable %.0fx%.0f @ scale %.2f)",
+                                          self.metalLayer.drawableSize.width,
+                                          self.metalLayer.drawableSize.height,
+                                          scale];
+    [self.renderDiagnostics attachToMetalLayer:self.metalLayer];
 }
 
 - (void)updateOverlayText {
-    NSMutableArray<NSString *> *lines = [NSMutableArray array];
-    [lines addObject:[NSString stringWithFormat:@"Metal Particle Test – Build #%lu – frame %lu",
-                      (unsigned long)kMetalParticleTestBuildNumber,
-                      (unsigned long)self.frameCount]];
-    [lines addObject:self.deviceStatus ?: @"Device: (unset)"];
-    [lines addObject:self.layerStatus ?: @"Layer: (unset)"];
-    [lines addObject:self.rendererStatus ?: @"Renderer: (unset)"];
-    [lines addObject:self.drawableStatus ?: @"Drawable: (unset)"];
-    [lines addObject:[NSString stringWithFormat:@"Metal successes: %lu | Metal fallbacks: %lu",
-                      (unsigned long)self.metalRenderSuccessCount,
-                      (unsigned long)self.metalRenderFailureCount]];
-    [lines addObject:[NSString stringWithFormat:@"Particles alive: %lu | Blend: %@",
-                      (unsigned long)self.particleSystem.aliveParticleCount,
-                      (self.particleSystem.blendMode == SSKParticleBlendModeAdditive ? @"Additive" : @"Alpha")]];
-
-    self.overlayString = [lines componentsJoinedByString:@"\n"];
-
-    if (self.statusLayer) {
-        self.statusLayer.string = self.overlayString;
-    }
+    NSString *title = [NSString stringWithFormat:@"Metal Particle Test – Build #%lu – frame %lu",
+                       (unsigned long)kMetalParticleTestBuildNumber,
+                       (unsigned long)self.frameCount];
+    NSString *blend = (self.particleSystem.blendMode == SSKParticleBlendModeAdditive ? @"Additive" : @"Alpha");
+    NSString *particlesLine = [NSString stringWithFormat:@"Particles alive: %lu | Blend: %@",
+                               (unsigned long)self.particleSystem.aliveParticleCount,
+                               blend];
+    NSArray<NSString *> *extras = @[particlesLine];
+    double fps = self.animationClock.framesPerSecond;
+    self.cachedOverlayString = [self.renderDiagnostics overlayStringWithTitle:title
+                                                                   extraLines:extras
+                                                              framesPerSecond:fps];
+    [self.renderDiagnostics updateOverlayWithTitle:title
+                                         extraLines:extras
+                                    framesPerSecond:fps];
 }
 
 #pragma mark - Particles

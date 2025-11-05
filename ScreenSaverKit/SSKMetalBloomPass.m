@@ -8,9 +8,11 @@
 
 @interface SSKMetalBloomPass ()
 @property (nonatomic, strong) id<MTLDevice> device;
+@property (nonatomic, strong) id<MTLLibrary> library;
 @property (nonatomic, strong) id<MTLComputePipelineState> thresholdPipeline;
 @property (nonatomic, strong) id<MTLComputePipelineState> compositePipeline;
-@property (nonatomic, strong) SSKMetalBlurPass *blurPass;
+@property (nonatomic, strong, nullable) SSKMetalBlurPass *sharedBlurPass;
+@property (nonatomic, strong, nullable) SSKMetalBlurPass *fallbackBlurPass;
 @end
 
 @implementation SSKMetalBloomPass
@@ -25,8 +27,7 @@
 }
 
 - (BOOL)setupWithDevice:(id<MTLDevice>)device
-                library:(id<MTLLibrary>)library
-               blurPass:(nullable SSKMetalBlurPass *)blurPass {
+                library:(id<MTLLibrary>)library {
     NSParameterAssert(device);
     NSParameterAssert(library);
     if (!device || !library) {
@@ -34,13 +35,7 @@
     }
 
     self.device = device;
-    self.blurPass = blurPass;
-    if (!self.blurPass) {
-        if ([SSKDiagnostics isEnabled]) {
-            [SSKDiagnostics log:@"SSKMetalBloomPass: requires a shared blur pass instance."];
-        }
-        return NO;
-    }
+    self.library = library;
 
     NSError *error = nil;
     id<MTLFunction> thresholdFunc = [library newFunctionWithName:@"bloomThresholdKernel"];
@@ -69,7 +64,31 @@
         return NO;
     }
 
-    return self.blurPass != nil;
+    return YES;
+}
+
+- (void)setSharedBlurPass:(SSKMetalBlurPass *)blurPass {
+    _sharedBlurPass = blurPass;
+}
+
+- (nullable SSKMetalBlurPass *)resolvedBlurPass {
+    if (self.sharedBlurPass) {
+        return self.sharedBlurPass;
+    }
+    if (!self.fallbackBlurPass) {
+        if (!self.device || !self.library) {
+            return nil;
+        }
+        SSKMetalBlurPass *fallback = [[SSKMetalBlurPass alloc] init];
+        if (![fallback setupWithDevice:self.device library:self.library]) {
+            if ([SSKDiagnostics isEnabled]) {
+                [SSKDiagnostics log:@"SSKMetalBloomPass: failed to set up fallback blur pass."];
+            }
+            return nil;
+        }
+        self.fallbackBlurPass = fallback;
+    }
+    return self.fallbackBlurPass;
 }
 
 - (BOOL)encodeBloomWithCommandBuffer:(id<MTLCommandBuffer>)commandBuffer
@@ -77,7 +96,15 @@
                         renderTarget:(id<MTLTexture>)renderTarget
                         textureCache:(SSKMetalTextureCache *)textureCache {
     if (!commandBuffer || !source || !renderTarget || !textureCache || !self.device ||
-        !self.thresholdPipeline || !self.compositePipeline || !self.blurPass) {
+        !self.thresholdPipeline || !self.compositePipeline) {
+        return NO;
+    }
+
+    SSKMetalBlurPass *blurPass = [self resolvedBlurPass];
+    if (!blurPass) {
+        if ([SSKDiagnostics isEnabled]) {
+            [SSKDiagnostics log:@"SSKMetalBloomPass: blur pass unavailable – skipping bloom."];
+        }
         return NO;
     }
 
@@ -113,11 +140,11 @@
     [encoder endEncoding];
 
     // Blur pass (bright -> blurred)
-    self.blurPass.radius = (self.blurSigma > 0.01) ? self.blurSigma : 3.0;
-    BOOL blurSuccess = [self.blurPass encodeBlur:brightTexture
-                                       destination:blurredTexture
-                                     commandBuffer:commandBuffer
-                                      textureCache:textureCache];
+    blurPass.radius = (self.blurSigma > 0.01) ? self.blurSigma : 3.0;
+    BOOL blurSuccess = [blurPass encodeBlur:brightTexture
+                                  destination:blurredTexture
+                                commandBuffer:commandBuffer
+                                 textureCache:textureCache];
     [textureCache releaseTexture:brightTexture];
     if (!blurSuccess) {
         [textureCache releaseTexture:blurredTexture];

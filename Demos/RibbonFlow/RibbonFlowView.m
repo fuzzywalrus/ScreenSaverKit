@@ -12,6 +12,7 @@
 #import "ScreenSaverKit/SSKDiagnostics.h"
 #import "ScreenSaverKit/SSKMetalRenderer.h"
 #import "ScreenSaverKit/SSKLayerEffects.h"
+#import "ScreenSaverKit/SSKMetalRenderDiagnostics.h"
 #import "ScreenSaverKit/SSKPaletteManager.h"
 #import "ScreenSaverKit/SSKParticleSystem.h"
 #import "ScreenSaverKit/SSKPreferenceBinder.h"
@@ -48,10 +49,9 @@ typedef struct {
 @property (nonatomic) BOOL additiveBlend;
 @property (nonatomic, copy) NSString *paletteIdentifier;
 @property (nonatomic) BOOL metalRenderingActive;
-@property (nonatomic) NSUInteger metalSuccessCount;
-@property (nonatomic) NSUInteger metalFailureCount;
+@property (nonatomic, strong) SSKMetalRenderDiagnostics *renderDiagnostics;
 @property (nonatomic, copy) NSString *metalStatusText;
-@property (nonatomic, strong) CATextLayer *metalStatusLayer;
+@property (nonatomic, copy) NSString *cachedOverlayString;
 @property (nonatomic, getter=isDiagnosticsEnabled) BOOL diagnosticsEnabled;
 @property (nonatomic) BOOL softEdgesEnabled;
 @property (nonatomic) NSInteger targetFramesPerSecond;
@@ -100,9 +100,14 @@ typedef struct {
         self.blurRadius = 0.0;
         self.bloomIntensity = 0.75;
         self.bloomThreshold = 0.65;
+        _renderDiagnostics = [[SSKMetalRenderDiagnostics alloc] init];
+        _renderDiagnostics.overlayEnabled = self.diagnosticsEnabled;
+        _renderDiagnostics.deviceStatus = @"Device: pending";
+        _renderDiagnostics.layerStatus = @"Layer: awaiting attachment";
+        _renderDiagnostics.rendererStatus = @"Renderer: idle";
+        _renderDiagnostics.drawableStatus = @"Drawable: not attempted";
         self.metalStatusText = @"Metal: initialising";
-        _metalSuccessCount = 0;
-        _metalFailureCount = 0;
+        _cachedOverlayString = @"Ribbon Flow Demo – diagnostics pending";
 
         [self configureParticleRenderHandler];
 
@@ -118,7 +123,20 @@ typedef struct {
     [super setupMetalRenderer:renderer];
     renderer.clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
     renderer.bloomThreshold = self.bloomThreshold;
-    [self refreshDiagnosticsOverlay];
+    [self.renderDiagnostics attachToMetalLayer:self.metalLayer];
+    id<MTLDevice> device = renderer.device;
+    if (device) {
+        self.renderDiagnostics.deviceStatus = [NSString stringWithFormat:@"Device: %@ (lowPower=%@ removable=%@)",
+                                               device.name ?: @"Unknown",
+                                               device.isLowPower ? @"YES" : @"NO",
+                                               device.isRemovable ? @"YES" : @"NO"];
+    } else {
+        self.renderDiagnostics.deviceStatus = @"Device: unavailable";
+    }
+    self.renderDiagnostics.layerStatus = @"Layer: CAMetalLayer attached";
+    self.renderDiagnostics.rendererStatus = @"Renderer: initialised";
+    self.renderDiagnostics.drawableStatus = @"Drawable: awaiting frame";
+    [self updateDiagnosticsOverlay];
 }
 
 - (void)setMetalStatusText:(NSString *)metalStatusText {
@@ -126,17 +144,18 @@ typedef struct {
         return;
     }
     _metalStatusText = [metalStatusText copy];
-    [self updateMetalStatusLayerString];
+    [self updateDiagnosticsOverlay];
 }
 
 - (void)setDiagnosticsEnabled:(BOOL)diagnosticsEnabled {
     if (_diagnosticsEnabled == diagnosticsEnabled) { return; }
     _diagnosticsEnabled = diagnosticsEnabled;
     [SSKDiagnostics setEnabled:diagnosticsEnabled];
+    self.renderDiagnostics.overlayEnabled = diagnosticsEnabled;
     if (!diagnosticsEnabled) {
         [self setNeedsDisplay:YES];
     }
-    [self refreshDiagnosticsOverlay];
+    [self updateDiagnosticsOverlay];
 }
 
 - (void)setSoftEdgesEnabled:(BOOL)softEdgesEnabled {
@@ -155,7 +174,7 @@ typedef struct {
         self.metalStatusText = @"Metal: gaussian blur active";
     }
     [self setNeedsDisplay:YES];
-    [self refreshDiagnosticsOverlay];
+    [self updateDiagnosticsOverlay];
 }
 
 - (void)setBloomIntensity:(CGFloat)bloomIntensity {
@@ -166,7 +185,7 @@ typedef struct {
         // No direct property, applied on demand via applyBloom:
         // but we update renderer's threshold/blur below when threshold setter fires.
     }
-    [self refreshDiagnosticsOverlay];
+    [self updateDiagnosticsOverlay];
 }
 
 - (void)setBloomThreshold:(CGFloat)bloomThreshold {
@@ -176,7 +195,7 @@ typedef struct {
     if (self.metalRenderer) {
         self.metalRenderer.bloomThreshold = clamped;
     }
-    [self refreshDiagnosticsOverlay];
+    [self updateDiagnosticsOverlay];
 }
 
 - (void)setTrailOpacity:(CGFloat)trailOpacity {
@@ -193,12 +212,12 @@ typedef struct {
 
 - (void)viewDidMoveToWindow {
     [super viewDidMoveToWindow];
-    [self refreshDiagnosticsOverlay];
+    [self updateDiagnosticsOverlay];
 }
 
 - (void)layout {
     [super layout];
-    [self layoutMetalStatusLayer];
+    [self updateDiagnosticsOverlay];
     if (!self.metalLayer && self.layer) {
         self.layer.frame = self.bounds;
         [self updateLayerBlurFilter];
@@ -259,17 +278,22 @@ typedef struct {
     }
 
     self.metalRenderingActive = YES;
-    self.metalSuccessCount += 1;
-    self.metalFailureCount = 0;
+    [self.renderDiagnostics recordMetalAttemptWithSuccess:YES];
+    self.renderDiagnostics.rendererStatus = @"Renderer: active (Metal)";
+    self.renderDiagnostics.drawableStatus = [NSString stringWithFormat:@"Drawable: presented (successes %lu)",
+                                             (unsigned long)self.renderDiagnostics.metalSuccessCount];
+    if (self.metalLayer) {
+        [self.renderDiagnostics attachToMetalLayer:self.metalLayer];
+    }
     if (blurRadius > 0.01) {
         self.metalStatusText = [NSString stringWithFormat:@"Metal: active (blur %.1f, successes %lu)",
                                 blurRadius,
-                                (unsigned long)self.metalSuccessCount];
+                                (unsigned long)self.renderDiagnostics.metalSuccessCount];
     } else {
         self.metalStatusText = [NSString stringWithFormat:@"Metal: active (successes %lu)",
-                                (unsigned long)self.metalSuccessCount];
+                                (unsigned long)self.renderDiagnostics.metalSuccessCount];
     }
-    [self refreshDiagnosticsOverlay];
+    [self updateDiagnosticsOverlay];
 }
 
 - (void)renderCPUFrameWithDeltaTime:(NSTimeInterval)dt {
@@ -277,27 +301,63 @@ typedef struct {
 
     self.metalRenderingActive = NO;
     if (self.useMetalPipeline) {
-        self.metalFailureCount += 1;
-        self.metalStatusText = self.metalAvailable ?
-            [NSString stringWithFormat:@"Metal: fallback (failures %lu)", (unsigned long)self.metalFailureCount] :
-            @"Metal: unavailable";
+        [self.renderDiagnostics recordMetalAttemptWithSuccess:NO];
+        if (self.metalAvailable) {
+            self.metalStatusText = [NSString stringWithFormat:@"Metal: fallback (failures %lu)",
+                                    (unsigned long)self.renderDiagnostics.metalFailureCount];
+            self.renderDiagnostics.rendererStatus = @"Renderer: CPU fallback";
+        } else {
+            self.metalStatusText = @"Metal: unavailable";
+            self.renderDiagnostics.rendererStatus = @"Renderer: waiting for Metal availability";
+        }
+        self.renderDiagnostics.drawableStatus = [NSString stringWithFormat:@"Drawable: fallback (failures %lu)",
+                                                 (unsigned long)self.renderDiagnostics.metalFailureCount];
     } else {
         self.metalStatusText = @"Metal: disabled";
+        self.renderDiagnostics.rendererStatus = @"Renderer: Metal disabled";
+        self.renderDiagnostics.drawableStatus = @"Drawable: CPU-only mode";
     }
-    [self refreshDiagnosticsOverlay];
+    [self updateDiagnosticsOverlay];
     [self ensureFallbackLayer];
     [self updateLayerBlurFilter];
     [self setNeedsDisplay:YES];
 }
 
-- (void)refreshDiagnosticsOverlay {
-    if (self.diagnosticsEnabled) {
-        [self ensureMetalStatusLayer];
-        [self layoutMetalStatusLayer];
-        [self updateMetalStatusLayerString];
-    } else if (self.metalStatusLayer) {
-        self.metalStatusLayer.hidden = YES;
+- (void)updateDiagnosticsOverlay {
+    if (!self.renderDiagnostics) { return; }
+    if (!self.diagnosticsEnabled) {
+        self.renderDiagnostics.overlayEnabled = NO;
+        self.cachedOverlayString = nil;
+        return;
     }
+    self.renderDiagnostics.overlayEnabled = YES;
+    if (self.metalLayer) {
+        [self.renderDiagnostics attachToMetalLayer:self.metalLayer];
+        CGSize drawableSize = self.metalLayer.drawableSize;
+        if (drawableSize.width > 0.0 && drawableSize.height > 0.0) {
+            self.renderDiagnostics.layerStatus = [NSString stringWithFormat:@"Layer: CAMetalLayer %.0fx%.0f",
+                                                  drawableSize.width,
+                                                  drawableSize.height];
+        } else {
+            self.renderDiagnostics.layerStatus = @"Layer: CAMetalLayer (awaiting drawable)";
+        }
+    } else {
+        self.renderDiagnostics.layerStatus = @"Layer: fallback CALayer";
+    }
+    NSString *statusLine = self.metalStatusText.length ? self.metalStatusText : @"Metal: inactive";
+    NSString *particlesLine = [NSString stringWithFormat:@"Alive: %lu | Target FPS: %ld | Blend: %@",
+                               (unsigned long)self.particleSystem.aliveParticleCount,
+                               (long)self.targetFramesPerSecond,
+                               self.additiveBlend ? @"Additive" : @"Alpha"];
+    NSArray<NSString *> *extraLines = @[statusLine, particlesLine];
+    double fps = self.animationClock.framesPerSecond;
+    NSString *title = @"Ribbon Flow Demo";
+    self.cachedOverlayString = [self.renderDiagnostics overlayStringWithTitle:title
+                                                                   extraLines:extraLines
+                                                              framesPerSecond:fps];
+    [self.renderDiagnostics updateOverlayWithTitle:title
+                                         extraLines:extraLines
+                                    framesPerSecond:fps];
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
@@ -313,18 +373,33 @@ typedef struct {
 
     [self.particleSystem drawInContext:ctx];
 
-    if (self.diagnosticsEnabled) {
-        NSString *metalLine = self.metalStatusText ?: @"Metal: inactive";
-        NSUInteger alive = self.particleSystem.aliveParticleCount;
-        NSString *overlay = [NSString stringWithFormat:@"Ribbon Flow Demo - %@ | FPS: %.1f (target %ld) | Alive: %lu | Metal success: %lu",
-                             metalLine,
-                             self.animationClock.framesPerSecond,
-                             (long)self.targetFramesPerSecond,
-                             (unsigned long)alive,
-                             (unsigned long)self.metalSuccessCount];
-        [SSKDiagnostics drawOverlayInView:self
-                                    text:overlay
-                         framesPerSecond:self.animationClock.framesPerSecond];
+    if (self.diagnosticsEnabled && self.cachedOverlayString.length > 0) {
+        NSArray<NSString *> *lines = [self.cachedOverlayString componentsSeparatedByString:@"\n"];
+        NSDictionary *attrs = @{ NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightRegular],
+                                  NSForegroundColorAttributeName: [NSColor colorWithCalibratedWhite:0.95 alpha:1.0] };
+        CGFloat lineHeight = 18.0;
+        CGFloat totalHeight = lineHeight * lines.count;
+        CGFloat padding = 18.0;
+        CGFloat x = NSMinX(self.bounds) + padding;
+        CGFloat y = NSMaxY(self.bounds) - totalHeight - padding;
+
+        CGFloat maxWidth = 0.0;
+        for (NSString *line in lines) {
+            NSSize size = [line sizeWithAttributes:attrs];
+            maxWidth = MAX(maxWidth, size.width);
+        }
+
+        NSRect panel = NSMakeRect(x - 10.0,
+                                  y - 10.0,
+                                  MIN(maxWidth + 20.0, self.bounds.size.width - 20.0),
+                                  totalHeight + 20.0);
+        [[NSColor colorWithCalibratedWhite:0 alpha:0.6] setFill];
+        [[NSBezierPath bezierPathWithRoundedRect:panel xRadius:8 yRadius:8] fill];
+
+        for (NSString *line in lines) {
+            [line drawAtPoint:NSMakePoint(x, y) withAttributes:attrs];
+            y += lineHeight;
+        }
     }
 }
 
@@ -539,72 +614,6 @@ typedef struct {
         self.layer = layer;
     }
     [self updateLayerBlurFilter];
-}
-
-- (void)ensureMetalStatusLayer {
-    if (!self.diagnosticsEnabled) { return; }
-    if (!self.metalLayer || self.metalStatusLayer) { return; }
-    CATextLayer *textLayer = [CATextLayer layer];
-    textLayer.alignmentMode = kCAAlignmentLeft;
-    textLayer.foregroundColor = [NSColor colorWithCalibratedWhite:0.95 alpha:1.0].CGColor;
-    textLayer.backgroundColor = [NSColor colorWithCalibratedWhite:0 alpha:0.55].CGColor;
-    textLayer.cornerRadius = 8.0;
-    textLayer.masksToBounds = YES;
-    textLayer.wrapped = YES;
-    CGFloat scale = 1.0;
-    if (self.window) {
-        scale = self.window.backingScaleFactor;
-    } else if (NSScreen.mainScreen) {
-        scale = NSScreen.mainScreen.backingScaleFactor;
-    }
-    textLayer.contentsScale = scale;
-    textLayer.font = (__bridge CFTypeRef)[NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightRegular];
-    textLayer.fontSize = 12.0;
-    [self.metalLayer addSublayer:textLayer];
-    self.metalStatusLayer = textLayer;
-    [self layoutMetalStatusLayer];
-    [self updateMetalStatusLayerString];
-}
-
-- (void)layoutMetalStatusLayer {
-    if (!self.metalStatusLayer) { return; }
-    if (!self.diagnosticsEnabled) {
-        self.metalStatusLayer.hidden = YES;
-        return;
-    }
-    CGFloat scale = 1.0;
-    if (self.window) {
-        scale = self.window.backingScaleFactor;
-    } else if (NSScreen.mainScreen) {
-        scale = NSScreen.mainScreen.backingScaleFactor;
-    }
-    CGFloat width = MIN(self.bounds.size.width - 32.0, 420.0);
-    CGFloat height = 80.0;
-    self.metalStatusLayer.frame = CGRectMake(18.0,
-                                             self.bounds.size.height - height - 18.0,
-                                             width,
-                                             height);
-    self.metalStatusLayer.contentsScale = scale;
-}
-
-- (void)updateMetalStatusLayerString {
-    if (!self.metalStatusLayer) { return; }
-    if (!self.diagnosticsEnabled) {
-        self.metalStatusLayer.hidden = YES;
-        return;
-    }
-    self.metalStatusLayer.hidden = NO;
-    NSString *status = self.metalStatusText.length ? self.metalStatusText : @"Metal: inactive";
-    double fps = self.animationClock.framesPerSecond;
-    NSUInteger alive = self.particleSystem.aliveParticleCount;
-    NSString *metrics = [NSString stringWithFormat:@"FPS: %.1f (target %ld)    Alive: %lu    Metal success: %lu",
-                         fps,
-                         (long)self.targetFramesPerSecond,
-                         (unsigned long)alive,
-                         (unsigned long)self.metalSuccessCount];
-    self.metalStatusLayer.string = [NSString stringWithFormat:@"%@\n%@",
-                                    status,
-                                    metrics];
 }
 
 - (void)updateLayerBlurFilter {

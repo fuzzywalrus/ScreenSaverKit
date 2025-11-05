@@ -48,6 +48,7 @@ SOURCES := \
 	$(KIT_SOURCE_DIR)/SSKMetalScreenSaverView.m \
 	$(KIT_SOURCE_DIR)/SSKMetalTextureCache.m \
 	$(KIT_SOURCE_DIR)/SSKMetalEffectStage.m \
+	$(KIT_SOURCE_DIR)/SSKMetalRenderDiagnostics.m \
 	$(KIT_SOURCE_DIR)/SSKMetalPass.m \
 	$(KIT_SOURCE_DIR)/SSKMetalParticlePass.m \
 	$(KIT_SOURCE_DIR)/SSKMetalBloomPass.m \
