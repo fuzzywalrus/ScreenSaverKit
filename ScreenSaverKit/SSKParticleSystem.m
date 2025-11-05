@@ -548,14 +548,21 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     MTLSize threadgroupCount = MTLSizeMake(threadGroups, 1, 1);
     [encoder dispatchThreadgroups:threadgroupCount threadsPerThreadgroup:threadsPerGroup];
     [encoder endEncoding];
-    [commandBuffer commit];
-    [commandBuffer waitUntilCompleted];
 
-    for (NSUInteger idx = 0; idx < self.capacity; idx++) {
-        if (!self.states[idx].alive) {
-            [self.availableIndices addIndex:idx];
-        }
-    }
+    __weak typeof(self) weakSelf = self;
+    [commandBuffer addCompletedHandler:^(__unused id<MTLCommandBuffer> buffer) {
+        __strong typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) { return; }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            for (NSUInteger idx = 0; idx < strongSelf.capacity; idx++) {
+                if (!strongSelf.states[idx].alive) {
+                    [strongSelf.availableIndices addIndex:idx];
+                }
+            }
+        });
+    }];
+
+    [commandBuffer commit];
 }
 
 - (void)applyAutomaticBehavioursToState:(SSKParticleState *)state delta:(NSTimeInterval)dt {
