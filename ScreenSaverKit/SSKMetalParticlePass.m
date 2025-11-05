@@ -162,9 +162,9 @@ typedef struct {
     descriptor.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
     descriptor.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
 
-    descriptor.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
+    descriptor.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
     descriptor.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-    descriptor.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+    descriptor.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorSourceAlpha;
     descriptor.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
     self.alphaPipeline = [self.device newRenderPipelineStateWithDescriptor:descriptor error:&error];
     if (!self.alphaPipeline) {

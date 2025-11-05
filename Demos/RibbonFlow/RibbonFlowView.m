@@ -79,8 +79,8 @@ typedef struct {
         kPrefFrameRate: @"30",
         kPrefTrailOpacity: @(0.6),
         kPrefBlurRadius: @(0.0),
-        kPrefBloomIntensity: @(0.75),
-        kPrefBloomThreshold: @(0.65),
+        kPrefBloomIntensity: @(0.25),
+        kPrefBloomThreshold: @(0.85),
         kPrefPalette: RibbonFlowDefaultPaletteIdentifier()
     };
 }
@@ -98,8 +98,8 @@ typedef struct {
         self.targetFramesPerSecond = 30;
         self.trailOpacity = 0.6;
         self.blurRadius = 0.0;
-        self.bloomIntensity = 0.75;
-        self.bloomThreshold = 0.65;
+        self.bloomIntensity = 0.25;
+        self.bloomThreshold = 0.85;
         _renderDiagnostics = [[SSKMetalRenderDiagnostics alloc] init];
         _renderDiagnostics.overlayEnabled = self.diagnosticsEnabled;
         _renderDiagnostics.deviceStatus = @"Device: pending";
@@ -271,10 +271,12 @@ typedef struct {
     }
 
     CGFloat bloomIntensity = self.bloomIntensity;
-    if (bloomIntensity > 0.05) {
+    if (bloomIntensity > 0.01) {
         renderer.bloomThreshold = self.bloomThreshold;
-        renderer.bloomBlurSigma = MAX(2.0, 2.0 + blurRadius * 0.4);
-        [renderer applyBloom:MIN(1.5, bloomIntensity)];
+        // Scale bloom intensity down when using additive blend to prevent white blowout
+        CGFloat effectiveIntensity = self.additiveBlend ? bloomIntensity * 0.5 : bloomIntensity;
+        renderer.bloomBlurSigma = 2.5;  // Fixed moderate blur
+        [renderer applyBloom:effectiveIntensity];
     }
 
     self.metalRenderingActive = YES;
@@ -487,7 +489,8 @@ typedef struct {
     CGFloat alpha = 1.0;
     if ([srgb colorSpace].colorSpaceModel == NSColorSpaceModelRGB) {
         [srgb getHue:&hue saturation:&saturation brightness:&brightness alpha:&alpha];
-        brightness = MIN(brightness, 0.82);
+        // Reduce brightness more when additive to prevent bloom blowout
+        brightness = self.additiveBlend ? MIN(brightness, 0.65) : MIN(brightness, 0.82);
         saturation = MIN(MAX(saturation, 0.45), 1.0);
         srgb = [NSColor colorWithHue:hue saturation:saturation brightness:brightness alpha:1.0];
     }
@@ -698,14 +701,14 @@ typedef struct {
 
     [stack addArrangedSubview:[self sliderRowWithTitle:@"Bloom Intensity"
                                              minValue:0.0
-                                             maxValue:1.5
+                                             maxValue:0.8
                                                   key:kPrefBloomIntensity
                                                format:@"%.2f"
                                                 binder:binder]];
 
     [stack addArrangedSubview:[self sliderRowWithTitle:@"Bloom Threshold"
-                                             minValue:0.0
-                                             maxValue:1.0
+                                             minValue:0.5
+                                             maxValue:0.95
                                                   key:kPrefBloomThreshold
                                                format:@"%.2f"
                                                 binder:binder]];
