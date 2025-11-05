@@ -109,7 +109,6 @@ typedef struct {
 - (void)setupMetalRenderer:(SSKMetalRenderer *)renderer {
     [super setupMetalRenderer:renderer];
     renderer.clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
-    renderer.particleBlurRadius = MAX(0.0, self.blurRadius);
     [self refreshDiagnosticsOverlay];
 }
 
@@ -143,9 +142,6 @@ typedef struct {
     if (fabs(_blurRadius - clamped) < 0.001) { return; }
     _blurRadius = clamped;
     [self updateLayerBlurFilter];
-    if (self.metalRenderer) {
-        self.metalRenderer.particleBlurRadius = MAX(0.0, _blurRadius);
-    }
     if (_blurRadius > 0.01) {
         self.metalStatusText = @"Metal: gaussian blur active";
     }
@@ -215,18 +211,29 @@ typedef struct {
     [self stepSimulationWithDeltaTime:dt];
 
     renderer.clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
-    renderer.particleBlurRadius = MAX(0.0, self.blurRadius);
     NSArray<SSKParticle *> *particles = [self.particleSystem aliveParticlesSnapshot];
     [renderer drawParticles:particles
                   blendMode:self.particleSystem.blendMode
                viewportSize:self.bounds.size];
 
+    CGFloat blurRadius = self.blurRadius;
+    if (blurRadius > 0.01) {
+        [renderer applyBlur:blurRadius];
+    }
+
+    CGFloat bloomIntensity = self.trailOpacity * (self.additiveBlend ? 1.25 : 0.6);
+    if (bloomIntensity > 0.05) {
+        renderer.bloomThreshold = self.additiveBlend ? 0.6 : 0.75;
+        renderer.bloomBlurSigma = MAX(2.0, 2.0 + blurRadius * 0.4);
+        [renderer applyBloom:MIN(1.5, bloomIntensity)];
+    }
+
     self.metalRenderingActive = YES;
     self.metalSuccessCount += 1;
     self.metalFailureCount = 0;
-    if (self.blurRadius > 0.01) {
+    if (blurRadius > 0.01) {
         self.metalStatusText = [NSString stringWithFormat:@"Metal: active (blur %.1f, successes %lu)",
-                                self.blurRadius,
+                                blurRadius,
                                 (unsigned long)self.metalSuccessCount];
     } else {
         self.metalStatusText = [NSString stringWithFormat:@"Metal: active (successes %lu)",

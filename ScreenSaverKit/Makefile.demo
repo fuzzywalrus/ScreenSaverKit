@@ -49,6 +49,8 @@ SOURCES := \
 	SSKMetalTextureCache.m \
 	SSKMetalPass.m \
 	SSKMetalParticlePass.m \
+	SSKMetalBloomPass.m \
+	SSKMetalBlurPass.m \
 	SSKLayerEffects.m
 
 INFO_PLIST ?= $(KIT_DIR)/TemplateInfo.plist

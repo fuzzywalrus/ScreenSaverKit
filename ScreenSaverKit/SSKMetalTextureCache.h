@@ -15,6 +15,10 @@ NS_ASSUME_NONNULL_BEGIN
                                       pixelFormat:(MTLPixelFormat)pixelFormat
                                             usage:(MTLTextureUsage)usage;
 
+/// Convenience helper that matches the size/pixelFormat of an existing texture.
+- (nullable id<MTLTexture>)acquireTextureMatchingTexture:(id<MTLTexture>)texture
+                                                  usage:(MTLTextureUsage)usage;
+
 /// Returns a texture to the cache for reuse.
 - (void)releaseTexture:(id<MTLTexture>)texture;
 

@@ -37,6 +37,9 @@ static void SSKMetalParticleRendererSetLastErrorMessage(NSString *message) {
         _renderer = renderer;
         _clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
         _blurRadius = 0.0;
+        _bloomIntensity = 0.0;
+        _bloomThreshold = 0.8f;
+        _bloomBlurSigma = 3.0f;
         _renderer.clearColor = _clearColor;
         _renderer.particleBlurRadius = _blurRadius;
     }
@@ -58,6 +61,18 @@ static void SSKMetalParticleRendererSetLastErrorMessage(NSString *message) {
     self.renderer.particleBlurRadius = clamped;
 }
 
+- (void)setBloomIntensity:(CGFloat)bloomIntensity {
+    _bloomIntensity = MAX(0.0, bloomIntensity);
+}
+
+- (void)setBloomThreshold:(CGFloat)bloomThreshold {
+    _bloomThreshold = MIN(MAX(bloomThreshold, 0.0), 1.0);
+}
+
+- (void)setBloomBlurSigma:(CGFloat)bloomBlurSigma {
+    _bloomBlurSigma = MAX(0.1, bloomBlurSigma);
+}
+
 - (BOOL)renderParticles:(NSArray<SSKParticle *> *)particles
               blendMode:(SSKParticleBlendMode)blendMode
            viewportSize:(CGSize)viewportSize {
@@ -74,6 +89,8 @@ static void SSKMetalParticleRendererSetLastErrorMessage(NSString *message) {
 
     self.renderer.clearColor = self.clearColor;
     self.renderer.particleBlurRadius = self.blurRadius;
+    self.renderer.bloomThreshold = self.bloomThreshold;
+    self.renderer.bloomBlurSigma = self.bloomBlurSigma;
 
     if (![self.renderer beginFrame]) {
         return NO;
@@ -82,6 +99,12 @@ static void SSKMetalParticleRendererSetLastErrorMessage(NSString *message) {
     [self.renderer drawParticles:particles ?: @[]
                        blendMode:blendMode
                     viewportSize:viewportSize];
+    if (self.blurRadius > 0.01) {
+        [self.renderer applyBlur:self.blurRadius];
+    }
+    if (self.bloomIntensity > 0.01) {
+        [self.renderer applyBloom:self.bloomIntensity];
+    }
     [self.renderer endFrame];
     return YES;
 }

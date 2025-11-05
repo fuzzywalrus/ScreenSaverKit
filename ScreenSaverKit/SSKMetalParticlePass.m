@@ -21,14 +21,9 @@ typedef struct {
 @property (nonatomic, strong) id<MTLLibrary> library;
 @property (nonatomic, strong) id<MTLRenderPipelineState> alphaPipeline;
 @property (nonatomic, strong) id<MTLRenderPipelineState> additivePipeline;
-@property (nonatomic, strong) id<MTLComputePipelineState> blurPipelineHorizontal;
-@property (nonatomic, strong) id<MTLComputePipelineState> blurPipelineVertical;
 @property (nonatomic, strong) id<MTLBuffer> quadVertexBuffer;
 @property (nonatomic, strong) id<MTLBuffer> instanceBuffer;
 @property (nonatomic) NSUInteger instanceCapacity;
-@property (nonatomic, strong) id<MTLTexture> blurIntermediateTexture;
-@property (nonatomic, strong) id<MTLTexture> blurScratchTexture;
-@property (nonatomic) CGSize blurTextureSize;
 @end
 
 @implementation SSKMetalParticlePass
@@ -41,7 +36,7 @@ typedef struct {
     }
     self.device = device;
     self.library = library;
-    return [self buildQuadBuffer] && [self buildRenderPipelines] && [self buildBlurPipelines];
+    return [self buildQuadBuffer] && [self buildRenderPipelines];
 }
 
 - (BOOL)encodeParticles:(NSArray<SSKParticle *> *)particles
@@ -104,21 +99,11 @@ typedef struct {
         instances[index++] = data;
     }
 
-    BOOL useBlur = (self.blurRadius > 0.01f);
-    id<MTLTexture> drawTexture = renderTarget;
-    if (useBlur) {
-        drawTexture = [self ensureBlurTexturesForTexture:renderTarget];
-        if (!drawTexture) {
-            useBlur = NO;
-            drawTexture = renderTarget;
-        }
-    }
-
     MTLRenderPassDescriptor *descriptor = [MTLRenderPassDescriptor renderPassDescriptor];
-    descriptor.colorAttachments[0].texture = drawTexture;
+    descriptor.colorAttachments[0].texture = renderTarget;
     descriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
     descriptor.colorAttachments[0].clearColor = clearColor;
-    descriptor.colorAttachments[0].loadAction = useBlur ? MTLLoadActionClear : loadAction;
+    descriptor.colorAttachments[0].loadAction = loadAction;
 
     id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:descriptor];
     if (!encoder) {
@@ -140,12 +125,6 @@ typedef struct {
     [encoder setVertexBytes:&viewportPoints length:sizeof(vector_float2) atIndex:2];
     [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4 instanceCount:index];
     [encoder endEncoding];
-
-    if (useBlur) {
-        [self applyGaussianBlurWithCommandBuffer:commandBuffer
-                                    sourceTexture:drawTexture
-                               destinationTexture:renderTarget];
-    }
 
     return YES;
 }
@@ -214,33 +193,6 @@ typedef struct {
     return YES;
 }
 
-- (BOOL)buildBlurPipelines {
-    NSError *error = nil;
-    id<MTLFunction> horiz = [self.library newFunctionWithName:@"gaussianBlurHorizontal"];
-    id<MTLFunction> vert = [self.library newFunctionWithName:@"gaussianBlurVertical"];
-    if (!horiz || !vert) {
-        if ([SSKDiagnostics isEnabled]) {
-            [SSKDiagnostics log:@"SSKMetalParticlePass: missing blur compute kernels in library."];
-        }
-        return NO;
-    }
-    self.blurPipelineHorizontal = [self.device newComputePipelineStateWithFunction:horiz error:&error];
-    if (!self.blurPipelineHorizontal) {
-        if ([SSKDiagnostics isEnabled]) {
-            [SSKDiagnostics log:@"SSKMetalParticlePass: failed to create horizontal blur pipeline: %@", error.localizedDescription];
-        }
-        return NO;
-    }
-    self.blurPipelineVertical = [self.device newComputePipelineStateWithFunction:vert error:&error];
-    if (!self.blurPipelineVertical) {
-        if ([SSKDiagnostics isEnabled]) {
-            [SSKDiagnostics log:@"SSKMetalParticlePass: failed to create vertical blur pipeline: %@", error.localizedDescription];
-        }
-        return NO;
-    }
-    return YES;
-}
-
 - (void)ensureInstanceCapacity:(NSUInteger)count {
     if (count <= self.instanceCapacity) {
         return;
@@ -250,67 +202,4 @@ typedef struct {
                                                    options:MTLResourceStorageModeShared];
     self.instanceCapacity = newCapacity;
 }
-
-- (id<MTLTexture>)ensureBlurTexturesForTexture:(id<MTLTexture>)texture {
-    if (!texture) {
-        return nil;
-    }
-    CGSize size = CGSizeMake(texture.width, texture.height);
-    if (self.blurIntermediateTexture && CGSizeEqualToSize(size, self.blurTextureSize)) {
-        return self.blurIntermediateTexture;
-    }
-
-    MTLTextureDescriptor *descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:texture.pixelFormat
-                                                                                          width:texture.width
-                                                                                         height:texture.height
-                                                                                      mipmapped:NO];
-    descriptor.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
-#if TARGET_OS_OSX
-    descriptor.storageMode = MTLStorageModePrivate;
-#endif
-    descriptor.resourceOptions = MTLResourceStorageModePrivate;
-
-    self.blurIntermediateTexture = [self.device newTextureWithDescriptor:descriptor];
-    self.blurScratchTexture = [self.device newTextureWithDescriptor:descriptor];
-    self.blurTextureSize = size;
-    return self.blurIntermediateTexture;
-}
-
-- (void)applyGaussianBlurWithCommandBuffer:(id<MTLCommandBuffer>)commandBuffer
-                              sourceTexture:(id<MTLTexture>)sourceTexture
-                         destinationTexture:(id<MTLTexture>)destinationTexture {
-    if (!commandBuffer || !sourceTexture || !destinationTexture ||
-        !self.blurPipelineHorizontal || !self.blurPipelineVertical ||
-        !self.blurScratchTexture) {
-        return;
-    }
-
-    float sigma = MAX(0.5f, (float)self.blurRadius);
-    MTLSize threadsPerGroup = MTLSizeMake(16, 16, 1);
-    MTLSize threadGroups = MTLSizeMake((self.blurScratchTexture.width + threadsPerGroup.width - 1) / threadsPerGroup.width,
-                                       (self.blurScratchTexture.height + threadsPerGroup.height - 1) / threadsPerGroup.height,
-                                       1);
-
-    id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
-    if (!encoder) { return; }
-    [encoder setComputePipelineState:self.blurPipelineHorizontal];
-    [encoder setTexture:sourceTexture atIndex:0];
-    [encoder setTexture:self.blurScratchTexture atIndex:1];
-    [encoder setBytes:&sigma length:sizeof(float) atIndex:0];
-    [encoder dispatchThreadgroups:threadGroups threadsPerThreadgroup:threadsPerGroup];
-    [encoder endEncoding];
-
-    threadGroups = MTLSizeMake((destinationTexture.width + threadsPerGroup.width - 1) / threadsPerGroup.width,
-                               (destinationTexture.height + threadsPerGroup.height - 1) / threadsPerGroup.height,
-                               1);
-    encoder = [commandBuffer computeCommandEncoder];
-    if (!encoder) { return; }
-    [encoder setComputePipelineState:self.blurPipelineVertical];
-    [encoder setTexture:self.blurScratchTexture atIndex:0];
-    [encoder setTexture:destinationTexture atIndex:1];
-    [encoder setBytes:&sigma length:sizeof(float) atIndex:0];
-    [encoder dispatchThreadgroups:threadGroups threadsPerThreadgroup:threadsPerGroup];
-    [encoder endEncoding];
-}
-
 @end

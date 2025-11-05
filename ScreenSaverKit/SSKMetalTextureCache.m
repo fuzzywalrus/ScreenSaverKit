@@ -61,6 +61,13 @@
     return [self.device newTextureWithDescriptor:descriptor];
 }
 
+- (id<MTLTexture>)acquireTextureMatchingTexture:(id<MTLTexture>)texture
+                                                  usage:(MTLTextureUsage)usage {
+    if (!texture) { return nil; }
+    CGSize size = CGSizeMake(texture.width, texture.height);
+    return [self acquireTextureWithSize:size pixelFormat:texture.pixelFormat usage:usage];
+}
+
 - (void)releaseTexture:(id<MTLTexture>)texture {
     if (!texture) { return; }
     NSUInteger width = texture.width;

@@ -17,8 +17,6 @@ NS_ASSUME_NONNULL_BEGIN
              loadAction:(MTLLoadAction)loadAction
              clearColor:(MTLClearColor)clearColor;
 
-@property (nonatomic) CGFloat blurRadius;
-
 @end
 
 NS_ASSUME_NONNULL_END

@@ -1,6 +1,8 @@
 # ScreenSaverKit
 
-`ScreenSaverKit` is a lightweight helper layer for building macOS ScreenSaver modules without having to re-implement the plumbing that every saver needs. Treat it as a starting point that you can copy into any new screensaver project.
+`ScreenSaverKit` is a lightweight helper layer for building macOS ScreenSaver modules without having to re-implement the plumbing that every saver needs. Treat it as a starting point that you can copy into any new screensaver project. It gives you access to both CPU and Metal-accelerated rendering paths, built-in preference management, configuration sheet scaffolding, and a particle system.
+
+There's plenty of demo savers included to illustrate how to use the various features, plus a complete tutorial in [tutorial.md](tutorial.md) that walks you through building your first saver from scratch.
 
 ![Hello World Demo](documentation-src/hello-world.gif)
 
@@ -16,7 +18,7 @@
 - ✅ Color palette management and interpolation utilities
 - ✅ Vector math helpers for smooth animations
 
-Keeping these concerns in one place lets each screensaver focus on drawing and behaviour instead of boilerplate.
+Keeping these concerns in one place lets each screensaver focus on drawing and behavior instead of boilerplate.
 
 ![Starfield Preferences](documentation-src/starfield.gif)
 

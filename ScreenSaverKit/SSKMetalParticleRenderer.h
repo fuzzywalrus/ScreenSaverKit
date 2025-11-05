@@ -30,6 +30,15 @@ NS_ASSUME_NONNULL_BEGIN
 /// Set to > 0 to enable the blur.
 @property (nonatomic) CGFloat blurRadius;
 
+/// Optional bloom intensity applied after particles are rendered (0 disables bloom).
+@property (nonatomic) CGFloat bloomIntensity;
+
+/// Threshold used by the bloom pass (0-1 range). Defaults to 0.8.
+@property (nonatomic) CGFloat bloomThreshold;
+
+/// Sigma used by the bloom blur (controls spread). Defaults to 3.0.
+@property (nonatomic) CGFloat bloomBlurSigma;
+
 @end
 
 NS_ASSUME_NONNULL_END

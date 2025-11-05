@@ -106,3 +106,40 @@ kernel void gaussianBlurVertical(texture2d<float, access::sample> inTexture [[te
     }
     outTexture.write(color / total, gid);
 }
+
+// --- Bloom kernels ---
+
+static inline float bloomLuminance(float3 color) {
+    return dot(color, float3(0.2126f, 0.7152f, 0.0722f));
+}
+
+kernel void bloomThresholdKernel(texture2d<float, access::sample> source [[texture(0)]],
+                                 texture2d<float, access::write> bright [[texture(1)]],
+                                 constant float &threshold [[buffer(0)]],
+                                 uint2 gid [[thread_position_in_grid]]) {
+    if (gid.x >= bright.get_width() || gid.y >= bright.get_height()) {
+        return;
+    }
+    constexpr sampler s(address::clamp_to_edge, filter::nearest);
+    float4 srcColor = source.sample(s, (float2(gid) + 0.5f) / float2(source.get_width(), source.get_height()));
+    float lum = bloomLuminance(srcColor.rgb);
+    float bloomFactor = max(lum - threshold, 0.0f);
+    float scale = bloomFactor > 0.0f ? bloomFactor / max(lum, 0.0001f) : 0.0f;
+    float3 bloomColor = srcColor.rgb * scale;
+    bright.write(float4(bloomColor, bloomFactor), gid);
+}
+
+kernel void bloomCompositeKernel(texture2d<float, access::sample> bloomTex [[texture(0)]],
+                                 texture2d<float, access::read_write> destination [[texture(1)]],
+                                 constant float &intensity [[buffer(0)]],
+                                 uint2 gid [[thread_position_in_grid]]) {
+    if (gid.x >= destination.get_width() || gid.y >= destination.get_height()) {
+        return;
+    }
+    constexpr sampler s(address::clamp_to_edge, filter::nearest);
+    float4 bloom = bloomTex.sample(s, (float2(gid) + 0.5f) / float2(bloomTex.get_width(), bloomTex.get_height()));
+    float4 dest = destination.read(gid);
+    float3 added = bloom.rgb * intensity;
+    dest.rgb = clamp(dest.rgb + added, float3(0.0f), float3(1.0f));
+    destination.write(dest, gid);
+}

@@ -64,8 +64,14 @@ NS_ASSUME_NONNULL_BEGIN
 /// Texture cache shared by render passes for intermediate allocations.
 @property (nonatomic, strong, readonly) SSKMetalTextureCache *textureCache;
 
-/// Blur radius forwarded to the particle pass (maintains compatibility with legacy renderer).
+/// Convenience property used by legacy wrappers to request a post-particle blur.
 @property (nonatomic) CGFloat particleBlurRadius;
+
+/// Bloom threshold (0-1) used when applyBloom: is invoked. Defaults to 0.8.
+@property (nonatomic) CGFloat bloomThreshold;
+
+/// Sigma used for the bloom blur pass. Defaults to 3.0.
+@property (nonatomic) CGFloat bloomBlurSigma;
 
 @end
 
