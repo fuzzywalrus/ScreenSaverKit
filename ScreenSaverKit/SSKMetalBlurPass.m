@@ -118,7 +118,12 @@ static const uint32_t kSSKMetalBlurMaxRadius = 32u;
     uint32_t radiusValue = radius;
     [encoder setBytes:&radiusValue length:sizeof(uint32_t) atIndex:1];
     [encoder dispatchThreadgroups:threadGroups threadsPerThreadgroup:threadsPerGroup];
-    [encoder memoryBarrierWithScope:MTLBarrierScopeTextures];
+    if ([encoder respondsToSelector:@selector(memoryBarrierWithResources:count:)]) {
+        id<MTLTexture> textures[] = { scratch };
+        [encoder memoryBarrierWithResources:textures count:1];
+    } else {
+        [encoder memoryBarrierWithScope:MTLBarrierScopeTextures];
+    }
 
     // Vertical pass: scratch -> destination
     threadsPerGroup = [self threadgroupSizeForPipeline:self.blurPipelineVertical];
@@ -165,8 +170,9 @@ static const uint32_t kSSKMetalBlurMaxRadius = 32u;
     float normalized[kSSKMetalBlurMaxRadius + 1] = {0.0f};
     memcpy(normalized, weights, sizeof(float) * (radius + 1));
 
+    NSUInteger bufferLength = sizeof(float) * (radius + 1);
     id<MTLBuffer> buffer = [self.device newBufferWithBytes:normalized
-                                                   length:sizeof(normalized)
+                                                   length:bufferLength
                                                   options:MTLResourceStorageModeShared];
     if (!buffer) {
         return NO;
