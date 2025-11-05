@@ -17,16 +17,18 @@
 #import "ScreenSaverKit/SSKPreferenceBinder.h"
 #import "ScreenSaverKit/SSKVectorMath.h"
 
-static NSString * const kPrefEmitterCount  = @"ribbonFlowEmitterCount";
-static NSString * const kPrefSpeed         = @"ribbonFlowSpeed";
-static NSString * const kPrefPalette       = @"ribbonFlowPalette";
-static NSString * const kPrefTrailWidth    = @"ribbonFlowTrailWidth";
-static NSString * const kPrefAdditiveBlend = @"ribbonFlowAdditiveBlend";
-static NSString * const kPrefDiagnostics   = @"ribbonFlowDiagnostics";
-static NSString * const kPrefSoftEdges    = @"ribbonFlowSoftEdges";
-static NSString * const kPrefFrameRate    = @"ribbonFlowFrameRate";
-static NSString * const kPrefTrailOpacity = @"ribbonFlowTrailOpacity";
-static NSString * const kPrefBlurRadius   = @"ribbonFlowBlurRadius";
+static NSString * const kPrefEmitterCount    = @"ribbonFlowEmitterCount";
+static NSString * const kPrefSpeed           = @"ribbonFlowSpeed";
+static NSString * const kPrefPalette         = @"ribbonFlowPalette";
+static NSString * const kPrefTrailWidth      = @"ribbonFlowTrailWidth";
+static NSString * const kPrefAdditiveBlend   = @"ribbonFlowAdditiveBlend";
+static NSString * const kPrefDiagnostics     = @"ribbonFlowDiagnostics";
+static NSString * const kPrefSoftEdges       = @"ribbonFlowSoftEdges";
+static NSString * const kPrefFrameRate       = @"ribbonFlowFrameRate";
+static NSString * const kPrefTrailOpacity    = @"ribbonFlowTrailOpacity";
+static NSString * const kPrefBlurRadius      = @"ribbonFlowBlurRadius";
+static NSString * const kPrefBloomIntensity  = @"ribbonFlowBloomIntensity";
+static NSString * const kPrefBloomThreshold  = @"ribbonFlowBloomThreshold";
 
 typedef struct {
     NSPoint position;
@@ -55,6 +57,8 @@ typedef struct {
 @property (nonatomic) NSInteger targetFramesPerSecond;
 @property (nonatomic) CGFloat trailOpacity;
 @property (nonatomic) CGFloat blurRadius;
+@property (nonatomic) CGFloat bloomIntensity;
+@property (nonatomic) CGFloat bloomThreshold;
 @end
 
 @implementation RibbonFlowView
@@ -75,6 +79,8 @@ typedef struct {
         kPrefFrameRate: @"30",
         kPrefTrailOpacity: @(0.6),
         kPrefBlurRadius: @(0.0),
+        kPrefBloomIntensity: @(0.75),
+        kPrefBloomThreshold: @(0.65),
         kPrefPalette: RibbonFlowDefaultPaletteIdentifier()
     };
 }
@@ -92,6 +98,8 @@ typedef struct {
         self.targetFramesPerSecond = 30;
         self.trailOpacity = 0.6;
         self.blurRadius = 0.0;
+        self.bloomIntensity = 0.75;
+        self.bloomThreshold = 0.65;
         self.metalStatusText = @"Metal: initialising";
         _metalSuccessCount = 0;
         _metalFailureCount = 0;
@@ -109,6 +117,7 @@ typedef struct {
 - (void)setupMetalRenderer:(SSKMetalRenderer *)renderer {
     [super setupMetalRenderer:renderer];
     renderer.clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
+    renderer.bloomThreshold = self.bloomThreshold;
     [self refreshDiagnosticsOverlay];
 }
 
@@ -146,6 +155,27 @@ typedef struct {
         self.metalStatusText = @"Metal: gaussian blur active";
     }
     [self setNeedsDisplay:YES];
+    [self refreshDiagnosticsOverlay];
+}
+
+- (void)setBloomIntensity:(CGFloat)bloomIntensity {
+    CGFloat clamped = MAX(0.0, bloomIntensity);
+    if (fabs(_bloomIntensity - clamped) < 0.001) { return; }
+    _bloomIntensity = clamped;
+    if (self.metalRenderer) {
+        // No direct property, applied on demand via applyBloom:
+        // but we update renderer's threshold/blur below when threshold setter fires.
+    }
+    [self refreshDiagnosticsOverlay];
+}
+
+- (void)setBloomThreshold:(CGFloat)bloomThreshold {
+    CGFloat clamped = MIN(MAX(bloomThreshold, 0.0), 1.0);
+    if (fabs(_bloomThreshold - clamped) < 0.001) { return; }
+    _bloomThreshold = clamped;
+    if (self.metalRenderer) {
+        self.metalRenderer.bloomThreshold = clamped;
+    }
     [self refreshDiagnosticsOverlay];
 }
 
@@ -221,9 +251,9 @@ typedef struct {
         [renderer applyBlur:blurRadius];
     }
 
-    CGFloat bloomIntensity = self.trailOpacity * (self.additiveBlend ? 1.25 : 0.6);
+    CGFloat bloomIntensity = self.bloomIntensity;
     if (bloomIntensity > 0.05) {
-        renderer.bloomThreshold = self.additiveBlend ? 0.6 : 0.75;
+        renderer.bloomThreshold = self.bloomThreshold;
         renderer.bloomBlurSigma = MAX(2.0, 2.0 + blurRadius * 0.4);
         [renderer applyBloom:MIN(1.5, bloomIntensity)];
     }
@@ -657,6 +687,20 @@ typedef struct {
                                                format:@"%.1f"
                                                 binder:binder]];
 
+    [stack addArrangedSubview:[self sliderRowWithTitle:@"Bloom Intensity"
+                                             minValue:0.0
+                                             maxValue:1.5
+                                                  key:kPrefBloomIntensity
+                                               format:@"%.2f"
+                                                binder:binder]];
+
+    [stack addArrangedSubview:[self sliderRowWithTitle:@"Bloom Threshold"
+                                             minValue:0.0
+                                             maxValue:1.0
+                                                  key:kPrefBloomThreshold
+                                               format:@"%.2f"
+                                                binder:binder]];
+
     NSTextField *fpsLabel = [NSTextField labelWithString:@"Frame Rate"];
     fpsLabel.font = [NSFont systemFontOfSize:12 weight:NSFontWeightRegular];
     NSPopUpButton *fpsPopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
@@ -782,6 +826,16 @@ typedef struct {
         [preferences[kPrefBlurRadius] doubleValue] :
         [defaults[kPrefBlurRadius] doubleValue];
     self.blurRadius = MAX(0.0, blur);
+
+    double bloomIntensity = [preferences[kPrefBloomIntensity] respondsToSelector:@selector(doubleValue)] ?
+        [preferences[kPrefBloomIntensity] doubleValue] :
+        [defaults[kPrefBloomIntensity] doubleValue];
+    self.bloomIntensity = MAX(0.0, bloomIntensity);
+
+    double bloomThreshold = [preferences[kPrefBloomThreshold] respondsToSelector:@selector(doubleValue)] ?
+        [preferences[kPrefBloomThreshold] doubleValue] :
+        [defaults[kPrefBloomThreshold] doubleValue];
+    self.bloomThreshold = MIN(MAX(bloomThreshold, 0.0), 1.0);
 
     NSString *paletteValue = [preferences[kPrefPalette] isKindOfClass:[NSString class]] ?
         preferences[kPrefPalette] : defaults[kPrefPalette];
