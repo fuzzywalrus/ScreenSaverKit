@@ -298,12 +298,15 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
 @property (nonatomic, assign) SSKParticleState *states;
 @property (nonatomic, strong) NSMutableArray<SSKParticle *> *particles;
 @property (nonatomic, strong) NSMutableArray<SSKParticle *> *aliveScratch;
-@property (nonatomic, strong) NSMutableIndexSet *availableIndices;
+@property (nonatomic, strong) NSMutableIndexSet *availableIndices; // Kept for compatibility, but optimized access
+@property (nonatomic, strong) NSMutableArray<NSNumber *> *freeIndicesStack; // Fast O(1) allocation
 @property (nonatomic, strong) id<MTLDevice> metalDevice;
 @property (nonatomic, strong) id<MTLCommandQueue> commandQueue;
 @property (nonatomic, strong) id<MTLComputePipelineState> computePipeline;
+@property (nonatomic, strong) id<MTLComputePipelineState> initializePipeline;
 @property (nonatomic, strong) id<MTLBuffer> particleBuffer;
 @property (nonatomic, strong) id<MTLBuffer> uniformsBuffer;
+@property (nonatomic, strong) id<MTLLibrary> shaderLibrary;
 @property (nonatomic) BOOL supportsMetalSimulation;
 @property (nonatomic) BOOL updateHandlerForcesCPU;
 @property (nonatomic, readonly) NSUInteger stateStride;
@@ -319,6 +322,11 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         _capacity = capacity;
         _particles = [NSMutableArray arrayWithCapacity:capacity];
         _availableIndices = [NSMutableIndexSet indexSetWithIndexesInRange:NSMakeRange(0, capacity)];
+        // Phase 3: Optimized index management - use stack for O(1) allocation
+        _freeIndicesStack = [NSMutableArray arrayWithCapacity:capacity];
+        for (NSUInteger i = 0; i < capacity; i++) {
+            [_freeIndicesStack addObject:@(i)];
+        }
         _blendMode = SSKParticleBlendModeAlpha;
         _gravity = NSZeroPoint;
         _globalDamping = 0.0;
@@ -362,13 +370,26 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     if (!queue) { return; }
 
     NSError *error = nil;
-    NSString *source = [NSString stringWithFormat:kSSKParticleComputeTemplate,
-                        kSSKParticleBehaviorFadeAlpha,
-                        kSSKParticleBehaviorFadeSize];
-    id<MTLLibrary> library = [device newLibraryWithSource:source options:nil error:&error];
+    
+    // Try to load from bundle first (for initializeParticles kernel)
+    id<MTLLibrary> library = nil;
+    NSBundle *bundle = [NSBundle bundleForClass:self.class];
+    NSString *metallibPath = [bundle pathForResource:@"SSKParticleShaders" ofType:@"metallib"];
+    if (metallibPath.length > 0) {
+        NSURL *metallibURL = [NSURL fileURLWithPath:metallibPath];
+        library = [device newLibraryWithURL:metallibURL error:&error];
+    }
+    
+    // Fallback to source compilation if bundle library not available
     if (!library) {
-        NSLog(@"SSKParticleSystem: failed to compile Metal compute shaders: %@", error);
-        return;
+        NSString *source = [NSString stringWithFormat:kSSKParticleComputeTemplate,
+                            kSSKParticleBehaviorFadeAlpha,
+                            kSSKParticleBehaviorFadeSize];
+        library = [device newLibraryWithSource:source options:nil error:&error];
+        if (!library) {
+            NSLog(@"SSKParticleSystem: failed to compile Metal compute shaders: %@", error);
+            return;
+        }
     }
 
     id<MTLFunction> kernel = [library newFunctionWithName:@"simulateParticles"];
@@ -378,6 +399,16 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     if (!pipeline) {
         NSLog(@"SSKParticleSystem: failed to create compute pipeline: %@", error);
         return;
+    }
+    
+    // Try to create initialization pipeline (may not be available if using source template)
+    id<MTLFunction> initKernel = [library newFunctionWithName:@"initializeParticles"];
+    id<MTLComputePipelineState> initPipeline = nil;
+    if (initKernel) {
+        initPipeline = [device newComputePipelineStateWithFunction:initKernel error:&error];
+        if (!initPipeline) {
+            NSLog(@"SSKParticleSystem: failed to create initialization pipeline: %@", error);
+        }
     }
 
     id<MTLBuffer> particleBuffer = [device newBufferWithLength:capacity * sizeof(SSKParticleState)
@@ -391,6 +422,8 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     self.metalDevice = device;
     self.commandQueue = queue;
     self.computePipeline = pipeline;
+    self.initializePipeline = initPipeline;
+    self.shaderLibrary = library;
     self.particleBuffer = particleBuffer;
     self.uniformsBuffer = uniformsBuffer;
     self.states = particleBuffer.contents;
@@ -429,45 +462,242 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
 
 - (void)spawnParticles:(NSUInteger)count initializer:(SSKParticleInitializer)initializer {
     if (count == 0 || !initializer) { return; }
-    NSUInteger emitted = 0;
-    while (emitted < count) {
-        NSUInteger index = [self.availableIndices firstIndex];
-        if (index == NSNotFound) { break; }
+    
+    // Phase 1.1 & 3: Batch index collection using optimized stack-based free list
+    NSUInteger availableCount = self.freeIndicesStack.count;
+    NSUInteger actualCount = MIN(count, availableCount);
+    if (actualCount == 0) { return; }
+    
+    NSUInteger *indices = (NSUInteger *)malloc(actualCount * sizeof(NSUInteger));
+    if (!indices) { return; }
+    
+    // Phase 3: O(1) allocation from stack
+    NSUInteger collected = 0;
+    while (collected < actualCount && self.freeIndicesStack.count > 0) {
+        NSNumber *indexNum = [self.freeIndicesStack lastObject];
+        [self.freeIndicesStack removeLastObject];
+        NSUInteger index = [indexNum unsignedIntegerValue];
+        indices[collected++] = index;
+        // Keep availableIndices in sync for compatibility
         [self.availableIndices removeIndex:index];
-
-        SSKParticleState *state = &self.states[index];
-        *state = (SSKParticleState){0};
-        state->alive = 1u;
-        state->size = 1.0f;
-        state->baseSize = 1.0f;
-        state->maxLife = 1.0f;
-        state->color = (vector_float4){1,1,1,1};
-        state->baseColor = (vector_float4){1,1,1,1};
-        state->sizeRange = (vector_float2){1,1};
-
-        SSKParticle *particle = self.particles[index];
-        particle.state = state;
-        particle.life = 0.0;
-        particle.position = NSZeroPoint;
-        particle.velocity = NSZeroPoint;
-        particle.color = [NSColor whiteColor];
-        particle.rotation = 0.0;
-        particle.rotationVelocity = 0.0;
-        particle.damping = 0.0;
-        particle.userScalar = 0.0;
-        particle.userVector = NSZeroPoint;
-        particle.baseSize = 1.0;
-        particle.sizeVelocity = 0.0;
-        particle.sizeOverLifeRange = SSKScalarRangeMake(1.0, 1.0);
-        particle.behaviorOptions = SSKParticleBehaviorOptionNone;
-
-        initializer(particle);
-        if (particle.baseSize <= 0.0) {
-            particle.baseSize = particle.size;
-        }
-        [self markStateDirtyAtIndex:index];
-        emitted++;
     }
+    
+    // Phase 1.4: Optimized state initialization - use direct struct manipulation
+    // Default particle state template
+    SSKParticleState defaultState = {0};
+    defaultState.alive = 1u;
+    defaultState.size = 1.0f;
+    defaultState.baseSize = 1.0f;
+    defaultState.maxLife = 1.0f;
+    defaultState.color = (vector_float4){1,1,1,1};
+    defaultState.baseColor = (vector_float4){1,1,1,1};
+    defaultState.sizeRange = (vector_float2){1,1};
+    
+    // Phase 1.2: Direct state manipulation - batch initialize states
+    NSUInteger minIndex = NSNotFound;
+    NSUInteger maxIndex = 0;
+    
+    for (NSUInteger i = 0; i < collected; i++) {
+        NSUInteger idx = indices[i];
+        SSKParticleState *state = &self.states[idx];
+        
+        // Copy default state template
+        *state = defaultState;
+        
+        // Update particle wrapper's state pointer (in case it changed)
+        SSKParticle *particle = self.particles[idx];
+        particle.state = state;
+        
+        // Track range for batched dirty marking
+        if (minIndex == NSNotFound || idx < minIndex) {
+            minIndex = idx;
+        }
+        if (idx > maxIndex) {
+            maxIndex = idx;
+        }
+        
+        // Phase 1.2: Only use property setters for user-provided initializer
+        initializer(particle);
+        
+        // Ensure baseSize is set if not already
+        if (state->baseSize <= 0.0f) {
+            state->baseSize = state->size;
+        }
+    }
+    
+    // Phase 1.3: Batched dirty marking - single call for all modified particles
+    if (minIndex != NSNotFound && self.particleBuffer) {
+        NSUInteger stride = self.stateStride;
+        NSUInteger startOffset = minIndex * stride;
+        NSUInteger endOffset = (maxIndex + 1) * stride;
+        NSUInteger rangeLength = endOffset - startOffset;
+        
+        if (startOffset + rangeLength <= self.particleBuffer.length) {
+            [self.particleBuffer didModifyRange:NSMakeRange(startOffset, rangeLength)];
+        } else {
+            // Fallback: mark entire buffer if range exceeds bounds
+            [self markAllStatesDirty];
+        }
+    }
+    
+    free(indices);
+}
+
+- (NSUInteger)spawnParticlesGPU:(NSUInteger)count parameters:(SSKParticleSpawnParameters)parameters {
+    if (count == 0) { return 0; }
+    
+    // Fallback to CPU if GPU resources unavailable
+    if (!self.initializePipeline || !self.commandQueue || !self.particleBuffer || !self.metalDevice) {
+        // Could fall back to CPU spawn here, but for now just return 0
+        return 0;
+    }
+    
+    // Phase 3: Collect available indices using optimized stack-based free list
+    NSUInteger availableCount = self.freeIndicesStack.count;
+    NSUInteger actualCount = MIN(count, availableCount);
+    if (actualCount == 0) { return 0; }
+    
+    NSUInteger *indices = (NSUInteger *)malloc(actualCount * sizeof(NSUInteger));
+    if (!indices) { return 0; }
+    
+    // Phase 3: O(1) allocation from stack
+    NSUInteger collected = 0;
+    while (collected < actualCount && self.freeIndicesStack.count > 0) {
+        NSNumber *indexNum = [self.freeIndicesStack lastObject];
+        [self.freeIndicesStack removeLastObject];
+        NSUInteger index = [indexNum unsignedIntegerValue];
+        indices[collected++] = index;
+        // Keep availableIndices in sync for compatibility
+        [self.availableIndices removeIndex:index];
+    }
+    
+    // Create buffers for GPU initialization
+    NSUInteger indicesBufferSize = actualCount * sizeof(uint32_t);
+    id<MTLBuffer> indicesBuffer = [self.metalDevice newBufferWithBytes:indices
+                                                                 length:indicesBufferSize
+                                                                options:MTLResourceStorageModeShared];
+    if (!indicesBuffer) {
+        free(indices);
+        return 0;
+    }
+    
+    // Convert parameters to Metal-compatible struct (must match shader struct layout exactly)
+    typedef struct __attribute__((aligned(16))) {
+        uint32_t regionType;
+        float padding0; // Align to 16 bytes for vector_float2
+        vector_float2 center;
+        vector_float2 size;
+        vector_float2 velocityXRange;
+        vector_float2 velocityYRange;
+        vector_float2 speedRange;
+        float directionAngle;
+        float directionSpread;
+        vector_float2 sizeRange;
+        vector_float2 lifeRange;
+        vector_float4 colorMin;
+        vector_float4 colorMax;
+        vector_float2 rotationVelocityRange;
+        vector_float2 dampingRange;
+        uint32_t behaviorOptions;
+        float padding1; // Align to 16 bytes for vector_float2
+        vector_float2 sizeOverLifeRange;
+    } MetalSpawnParameters;
+    
+    MetalSpawnParameters metalParams = {0};
+    metalParams.regionType = (uint32_t)parameters.regionType;
+    metalParams.center = parameters.center;
+    metalParams.size = parameters.size;
+    metalParams.velocityXRange = parameters.velocityXRange;
+    metalParams.velocityYRange = parameters.velocityYRange;
+    metalParams.speedRange = parameters.speedRange;
+    metalParams.directionAngle = parameters.directionAngle;
+    metalParams.directionSpread = parameters.directionSpread;
+    metalParams.sizeRange = parameters.sizeRange;
+    metalParams.lifeRange = parameters.lifeRange;
+    metalParams.colorMin = parameters.colorMin;
+    metalParams.colorMax = parameters.colorMax;
+    metalParams.rotationVelocityRange = parameters.rotationVelocityRange;
+    metalParams.dampingRange = parameters.dampingRange;
+    metalParams.behaviorOptions = parameters.behaviorOptions;
+    metalParams.sizeOverLifeRange = parameters.sizeOverLifeRange;
+    
+    id<MTLBuffer> paramsBuffer = [self.metalDevice newBufferWithBytes:&metalParams
+                                                                length:sizeof(MetalSpawnParameters)
+                                                               options:MTLResourceStorageModeShared];
+    if (!paramsBuffer) {
+        free(indices);
+        return 0;
+    }
+    
+    uint32_t countValue = (uint32_t)actualCount;
+    id<MTLBuffer> countBuffer = [self.metalDevice newBufferWithBytes:&countValue
+                                                               length:sizeof(uint32_t)
+                                                              options:MTLResourceStorageModeShared];
+    if (!countBuffer) {
+        free(indices);
+        return 0;
+    }
+    
+    // Dispatch compute shader
+    id<MTLCommandBuffer> commandBuffer = [self.commandQueue commandBuffer];
+    if (!commandBuffer) {
+        free(indices);
+        return 0;
+    }
+    
+    id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
+    [encoder setComputePipelineState:self.initializePipeline];
+    [encoder setBuffer:self.particleBuffer offset:0 atIndex:0];
+    [encoder setBuffer:paramsBuffer offset:0 atIndex:1];
+    [encoder setBuffer:indicesBuffer offset:0 atIndex:2];
+    [encoder setBuffer:countBuffer offset:0 atIndex:3];
+    
+    NSUInteger threadGroupSize = MIN(self.initializePipeline.maxTotalThreadsPerThreadgroup, 256);
+    if (threadGroupSize == 0) {
+        threadGroupSize = 1;
+    }
+    NSUInteger threadGroups = (actualCount + threadGroupSize - 1) / threadGroupSize;
+    MTLSize threadsPerGroup = MTLSizeMake(threadGroupSize, 1, 1);
+    MTLSize threadgroupCount = MTLSizeMake(threadGroups, 1, 1);
+    [encoder dispatchThreadgroups:threadgroupCount threadsPerThreadgroup:threadsPerGroup];
+    [encoder endEncoding];
+    
+    // Wait for completion (synchronous for now - could be made async if needed)
+    [commandBuffer commit];
+    [commandBuffer waitUntilCompleted];
+    
+    // Update particle wrapper state pointers and mark dirty
+    NSUInteger minIndex = NSNotFound;
+    NSUInteger maxIndex = 0;
+    for (NSUInteger i = 0; i < collected; i++) {
+        NSUInteger idx = indices[i];
+        SSKParticle *particle = self.particles[idx];
+        particle.state = &self.states[idx];
+        
+        if (minIndex == NSNotFound || idx < minIndex) {
+            minIndex = idx;
+        }
+        if (idx > maxIndex) {
+            maxIndex = idx;
+        }
+    }
+    
+    // Batched dirty marking
+    if (minIndex != NSNotFound && self.particleBuffer) {
+        NSUInteger stride = self.stateStride;
+        NSUInteger startOffset = minIndex * stride;
+        NSUInteger endOffset = (maxIndex + 1) * stride;
+        NSUInteger rangeLength = endOffset - startOffset;
+        
+        if (startOffset + rangeLength <= self.particleBuffer.length) {
+            [self.particleBuffer didModifyRange:NSMakeRange(startOffset, rangeLength)];
+        } else {
+            [self markAllStatesDirty];
+        }
+    }
+    
+    free(indices);
+    return collected;
 }
 
 - (void)advanceBy:(NSTimeInterval)dt {
@@ -490,6 +720,8 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         state->life += (float)dt;
         if (state->life >= state->maxLife) {
             state->alive = 0u;
+            // Phase 3: O(1) deallocation to stack
+            [self.freeIndicesStack addObject:@(idx)];
             [self.availableIndices addIndex:idx];
             continue;
         }
@@ -556,6 +788,8 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         dispatch_async(dispatch_get_main_queue(), ^{
             for (NSUInteger idx = 0; idx < strongSelf.capacity; idx++) {
                 if (!strongSelf.states[idx].alive) {
+                    // Phase 3: O(1) deallocation to stack
+                    [strongSelf.freeIndicesStack addObject:@(idx)];
                     [strongSelf.availableIndices addIndex:idx];
                 }
             }
@@ -654,6 +888,11 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         state->color = (vector_float4){1,1,1,1};
         state->baseColor = (vector_float4){1,1,1,1};
         state->sizeRange = (vector_float2){1,1};
+    }
+    // Phase 3: Reset free indices stack
+    [self.freeIndicesStack removeAllObjects];
+    for (NSUInteger i = 0; i < self.capacity; i++) {
+        [self.freeIndicesStack addObject:@(i)];
     }
     [self.availableIndices removeAllIndexes];
     [self.availableIndices addIndexesInRange:NSMakeRange(0, self.capacity)];

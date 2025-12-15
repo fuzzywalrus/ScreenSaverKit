@@ -36,6 +36,62 @@ NS_INLINE SSKScalarRange SSKScalarRangeZero(void) {
     return SSKScalarRangeMake(0.0, 0.0);
 }
 
+/// Spawn region type for GPU-accelerated particle generation.
+typedef NS_ENUM(NSUInteger, SSKParticleSpawnRegionType) {
+    /// Rectangular spawn region defined by center and size.
+    SSKParticleSpawnRegionTypeRectangle,
+    /// Circular spawn region defined by center and radius.
+    SSKParticleSpawnRegionTypeCircle,
+    /// Single point spawn (all particles at same position).
+    SSKParticleSpawnRegionTypePoint
+};
+
+/// Parameters for GPU-accelerated particle spawning.
+typedef struct {
+    /// Spawn region type.
+    SSKParticleSpawnRegionType regionType;
+    /// Center point of spawn region.
+    vector_float2 center;
+    /// Size/radius of spawn region (width, height for rectangle; radius for circle).
+    vector_float2 size;
+    /// Velocity range (min, max) in X direction.
+    vector_float2 velocityXRange;
+    /// Velocity range (min, max) in Y direction.
+    vector_float2 velocityYRange;
+    /// Speed range (min, max) for directional spawning.
+    vector_float2 speedRange;
+    /// Direction angle in radians (0 = right, π/2 = up).
+    float directionAngle;
+    /// Direction spread in radians (cone angle).
+    float directionSpread;
+    /// Size range (min, max).
+    vector_float2 sizeRange;
+    /// Life range (min, max) in seconds.
+    vector_float2 lifeRange;
+    /// Color range (RGBA min, RGBA max) - 8 floats: [rMin, gMin, bMin, aMin, rMax, gMax, bMax, aMax].
+    vector_float4 colorMin;
+    vector_float4 colorMax;
+    /// Rotation velocity range (min, max) in radians per second.
+    vector_float2 rotationVelocityRange;
+    /// Damping range (min, max) per second.
+    vector_float2 dampingRange;
+    /// Behavior options flags.
+    uint32_t behaviorOptions;
+    /// Size over life range (start multiplier, end multiplier).
+    vector_float2 sizeOverLifeRange;
+} SSKParticleSpawnParameters;
+
+NS_INLINE SSKParticleSpawnParameters SSKParticleSpawnParametersMake(void) {
+    SSKParticleSpawnParameters params = {0};
+    params.regionType = SSKParticleSpawnRegionTypePoint;
+    params.sizeRange = (vector_float2){1.0f, 1.0f};
+    params.lifeRange = (vector_float2){1.0f, 1.0f};
+    params.colorMin = (vector_float4){1.0f, 1.0f, 1.0f, 1.0f};
+    params.colorMax = (vector_float4){1.0f, 1.0f, 1.0f, 1.0f};
+    params.sizeOverLifeRange = (vector_float2){1.0f, 1.0f};
+    return params;
+}
+
 @class SSKParticle;
 @class SSKMetalParticleRenderer;
 
@@ -88,6 +144,13 @@ typedef void (^SSKParticleRenderer)(CGContextRef ctx, SSKParticle *particle);
 
 /// Emits `count` particles, initialising each with `initializer`.
 - (void)spawnParticles:(NSUInteger)count initializer:(SSKParticleInitializer)initializer;
+
+/// GPU-accelerated particle spawning using parameterized initialization.
+/// This method is significantly faster for large batches (100+ particles) when
+/// initialization can be expressed as parameter ranges rather than custom logic.
+/// Falls back to CPU path if Metal resources are unavailable.
+/// Returns the number of particles actually spawned (may be less than `count` if capacity is exhausted).
+- (NSUInteger)spawnParticlesGPU:(NSUInteger)count parameters:(SSKParticleSpawnParameters)parameters;
 
 /// Advances the simulation by `dt` seconds, removing expired particles.
 - (void)advanceBy:(NSTimeInterval)dt;

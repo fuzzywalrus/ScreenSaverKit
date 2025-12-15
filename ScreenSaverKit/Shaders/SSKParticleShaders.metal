@@ -57,6 +57,163 @@ fragment float4 particleFragment(ParticleVertexOut in [[stage_in]]) {
     return float4(in.color.rgb, alpha);
 }
 
+// --- Particle initialization compute kernel ---
+
+// ParticleState structure must match SSKParticleState in SSKParticleSystem.m
+struct ParticleState {
+    float2 position;
+    float2 velocity;
+    float2 userVector;
+    float2 sizeRange;
+    float4 color;
+    float4 baseColor;
+    float life;
+    float maxLife;
+    float size;
+    float baseSize;
+    float sizeVelocity;
+    float rotation;
+    float rotationVelocity;
+    float damping;
+    float userScalar;
+    uint behaviorFlags;
+    uint alive;
+    uint padding0;
+    uint padding1;
+};
+
+// SpawnParameters structure must match SSKParticleSpawnParameters (with alignment)
+struct SpawnParameters {
+    uint regionType;        // SSKParticleSpawnRegionType
+    float padding0;         // Align to 16 bytes for float2
+    float2 center;
+    float2 size;
+    float2 velocityXRange;
+    float2 velocityYRange;
+    float2 speedRange;
+    float directionAngle;
+    float directionSpread;
+    float2 sizeRange;
+    float2 lifeRange;
+    float4 colorMin;
+    float4 colorMax;
+    float2 rotationVelocityRange;
+    float2 dampingRange;
+    uint behaviorOptions;
+    float padding1;         // Align to 16 bytes for float2
+    float2 sizeOverLifeRange;
+};
+
+// Simple hash-based random number generator for GPU
+static inline float hashRandom(uint seed) {
+    uint n = seed;
+    n = (n << 13) ^ n;
+    n = n * (n * n * 15731 + 789221) + 1376312589;
+    return fract(float(n) * (1.0 / 4294967296.0));
+}
+
+static inline float2 hashRandom2(uint seed) {
+    return float2(hashRandom(seed), hashRandom(seed + 1));
+}
+
+static inline float4 hashRandom4(uint seed) {
+    return float4(hashRandom(seed), hashRandom(seed + 1), hashRandom(seed + 2), hashRandom(seed + 3));
+}
+
+// Generate random position based on spawn region type
+static inline float2 generateSpawnPosition(uint index, constant SpawnParameters &params) {
+    float2 rnd = hashRandom2(index * 7919 + 12345);
+    
+    switch (params.regionType) {
+        case 0: { // SSKParticleSpawnRegionTypeRectangle
+            return params.center + float2(
+                (rnd.x - 0.5f) * params.size.x,
+                (rnd.y - 0.5f) * params.size.y
+            );
+        }
+        case 1: { // SSKParticleSpawnRegionTypeCircle
+            float angle = rnd.x * 2.0f * 3.14159265359f;
+            float radius = sqrt(rnd.y) * params.size.x; // sqrt for uniform distribution
+            return params.center + float2(cos(angle), sin(angle)) * radius;
+        }
+        case 2: // SSKParticleSpawnRegionTypePoint
+        default:
+            return params.center;
+    }
+}
+
+// Generate random velocity based on parameters
+static inline float2 generateVelocity(uint index, constant SpawnParameters &params) {
+    float2 rnd = hashRandom2(index * 7919 + 23456);
+    
+    // Check if using directional spawning (speedRange is set)
+    if (params.speedRange.y > params.speedRange.x) {
+        float speed = mix(params.speedRange.x, params.speedRange.y, rnd.x);
+        float angle = params.directionAngle + (rnd.y - 0.5f) * params.directionSpread;
+        return float2(cos(angle), sin(angle)) * speed;
+    } else {
+        // Use velocity ranges
+        float vx = mix(params.velocityXRange.x, params.velocityXRange.y, rnd.x);
+        float vy = mix(params.velocityYRange.x, params.velocityYRange.y, rnd.y);
+        return float2(vx, vy);
+    }
+}
+
+kernel void initializeParticles(device ParticleState *particles [[buffer(0)]],
+                                constant SpawnParameters &params [[buffer(1)]],
+                                device uint *indices [[buffer(2)]],
+                                constant uint &count [[buffer(3)]],
+                                uint id [[thread_position_in_grid]]) {
+    if (id >= count) { return; }
+    
+    uint particleIndex = indices[id];
+    ParticleState state;
+    
+    // Initialize with defaults
+    state.alive = 1u;
+    state.life = 0.0f;
+    state.rotation = 0.0f;
+    state.sizeVelocity = 0.0f;
+    state.userScalar = 0.0f;
+    state.userVector = float2(0.0f, 0.0f);
+    
+    // Generate spawn position
+    state.position = generateSpawnPosition(id, params);
+    
+    // Generate velocity
+    state.velocity = generateVelocity(id, params);
+    state.userVector = normalize(state.velocity);
+    
+    // Generate size
+    float sizeRnd = hashRandom(id * 7919 + 34567);
+    state.size = mix(params.sizeRange.x, params.sizeRange.y, sizeRnd);
+    state.baseSize = state.size;
+    state.sizeRange = params.sizeOverLifeRange;
+    
+    // Generate life
+    float lifeRnd = hashRandom(id * 7919 + 45678);
+    state.maxLife = mix(params.lifeRange.x, params.lifeRange.y, lifeRnd);
+    
+    // Generate color
+    float4 colorRnd = hashRandom4(id * 7919 + 56789);
+    state.color = mix(params.colorMin, params.colorMax, colorRnd);
+    state.baseColor = state.color;
+    
+    // Generate rotation velocity
+    float rotVelRnd = hashRandom(id * 7919 + 67890);
+    state.rotationVelocity = mix(params.rotationVelocityRange.x, params.rotationVelocityRange.y, rotVelRnd);
+    
+    // Generate damping
+    float dampingRnd = hashRandom(id * 7919 + 78901);
+    state.damping = mix(params.dampingRange.x, params.dampingRange.y, dampingRnd);
+    
+    // Set behavior options
+    state.behaviorFlags = params.behaviorOptions;
+    
+    // Write state to particle buffer
+    particles[particleIndex] = state;
+}
+
 // --- Gaussian blur compute kernels ---
 
 #define SSK_MAX_BLUR_RADIUS 32u
