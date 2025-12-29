@@ -127,11 +127,18 @@ typedef struct {
     vector_float2 position;      // World position
     vector_float2 direction;     // Trail direction (for orientation)
     float width;                 // Trail width
-    float length;                // Trail length (12x width)
+    float length;                // Trail length (calculated from z-depth or length multiplier)
     vector_float4 color;         // RGBA
-    float softness;              // Edge feathering (from particle.userScalar)
+    float softness;              // Edge feathering (from particle.userScalar, 0 for z-depth)
 } SSKMetalInstanceData;
 ```
+
+**Z-Depth Rendering Support**:
+- When z-depth is enabled, `userScalar` contains z-depth value (0.01-1.0)
+- Length calculated as: `width * lengthMultiplier * zDepth` (far drops are shorter)
+- Length multiplier stored in `SSKMetalParticlePass.lengthMultiplier` property
+- Softness set to 0 for z-depth particles (hard edges for retro rain effect)
+- Color already darkened by z-depth during GPU spawn
 
 **When particles render soft-edged**:
 ```metal
@@ -600,12 +607,123 @@ NSLog(@"Cache has %lu buckets", (unsigned long)self.textureCache.textureBuckets.
 | Shader function not found | Check function name in kernel matches library |
 | Particles not rendered | Check `drawParticles:` called with non-empty array |
 | Performance degradation | Profile texture allocation; check cache hit rate |
+| Z-depth not visible | Ensure `zDepthEnabled = 1u` in spawn parameters, check `lengthMultiplier` is set on particle pass |
+| GPU spawn returns 0 | Check Metal device available, verify shader library loaded, check particle capacity |
+| Z-depth particles too slow | Adjust `zDepthScale` to reduce minimum z-depth (higher scale = more distant drops) |
 
 ---
 
+## GPU-Accelerated Particle Spawning
+
+### Using `spawnParticlesGPU:parameters:`
+
+The particle system supports hardware-accelerated batch particle initialization via Metal compute shaders:
+
+```objc
+SSKParticleSpawnParameters params = SSKParticleSpawnParametersMake();
+params.regionType = SSKParticleSpawnRegionTypeRectangle;
+params.center = (vector_float2){width/2, height + 50};
+params.size = (vector_float2){(float)width, 20.0f};
+params.velocityXRange = (vector_float2){vx * 0.9f, vx * 1.1f};
+params.velocityYRange = (vector_float2){vy * 0.9f, vy * 1.1f};
+params.sizeRange = (vector_float2){2.0f, 4.0f};
+params.lifeRange = (vector_float2){2.0f, 3.0f};
+params.colorMin = (vector_float4){0.2f, 0.2f, 0.2f, 1.0f};
+params.colorMax = (vector_float4){0.8f, 0.8f, 0.8f, 1.0f};
+params.behaviorOptions = SSKParticleBehaviorOptionFadeAlpha;
+
+// Enable z-depth for perspective effect
+params.zDepthEnabled = 1u;
+params.zDepthScale = 10.0f;  // Moderate depth variation
+params.lengthMultiplier = 8.0f;  // Base length for rendering
+
+NSUInteger spawned = [self.particleSystem spawnParticlesGPU:count parameters:params];
+```
+
+### Z-Depth Parameters
+
+When `zDepthEnabled` is set:
+- **Z-Depth Calculation**: Random z-depth value (minZ to 1.0) calculated per particle
+  - `minZ = max(0.2, 1.0 / (zDepthScale + 1.0))`
+  - Scale 1.0 → minZ ~0.5 (subtle effect)
+  - Scale 100.0 → minZ ~0.2 (strong effect)
+- **Velocity Scaling**: `velocity *= zDepth` (far drops move slower)
+- **Length Scaling**: Applied during rendering as `length *= zDepth`
+- **Color Darkening**: `brightness *= (0.3 + zDepth * 0.7)` (far drops darker)
+- **Storage**: Z-depth stored in `particle.userScalar` (0.01-1.0 range)
+
+### Performance Benefits
+
+- **Parallel Initialization**: All particles initialized simultaneously on GPU
+- **No CPU Overhead**: Z-depth calculations performed entirely on GPU
+- **Async Option**: Set `synchronizesMetalSpawn = NO` for non-blocking spawn
+- **Fallback**: Automatically falls back to CPU spawn if GPU unavailable
+
+### Example: Rain Screensaver with Z-Depth
+
+See `/Demos/Rain/RainView.m` for a complete example of z-depth usage:
+- GPU spawn with z-depth enabled
+- Length multiplier synchronization with renderer
+- CPU fallback path with matching z-depth calculations
+
+## Testing Your Implementation
+
+When adding new effects or modifying existing ones, ensure you have test coverage:
+
+### Unit Testing New Effects
+
+1. **Create Test File**: `SSKYourEffectPassTests.m`
+2. **Test Initialization**: Verify setup with device/library
+3. **Test Encoding**: Verify encode method with valid/invalid inputs
+4. **Test Metal Availability**: Skip tests gracefully when Metal unavailable
+
+**Example**:
+```objc
+- (void)testYourEffectPassSetup {
+    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    if (!device) {
+        NSLog(@"Skipping test - Metal unavailable");
+        return;
+    }
+    
+    id<MTLLibrary> library = [TestHelpers loadParticleShaderLibraryWithDevice:device];
+    SSKYourEffectPass *pass = [[SSKYourEffectPass alloc] init];
+    XCTAssertTrue([pass setupWithDevice:device library:library]);
+}
+```
+
+### Integration Testing
+
+Test your effect in the full rendering pipeline:
+```objc
+- (void)testYourEffectInPipeline {
+    SSKMetalRenderer *renderer = [[SSKMetalRenderer alloc] initWithDevice:device];
+    // ... setup particles ...
+    [renderer drawParticles:particles ...];
+    [renderer applyYourEffect:...];
+    [renderer endFrame];
+    // Verify result
+}
+```
+
+### Metal-Specific Tests
+
+Always check Metal availability:
+```objc
+if (![TestHelpers loadParticleShaderLibraryWithDevice:device]) {
+    NSLog(@"Skipping Metal test");
+    return;
+}
+```
+
+See `ARCHITECTURE_ANALYSIS.md` → "Testing Architecture" for more details.
+
 ## References
 
-- `ARCHITECTURE_ANALYSIS.md` – Deep dive into design
+- `ARCHITECTURE_ANALYSIS.md` – Deep dive into design, includes testing architecture
 - `ARCHITECTURE_DIAGRAMS.md` – Visual component relationships
 - `SSKParticleSystem.md` – Detailed particle system docs
 - `tutorial.md` – End-to-end saver creation guide
+- `Demos/Rain/README.md` – Z-depth implementation example
+- `/Tests/README.md` – Test suite documentation
+- `PERFORMANCE_TESTING.md` – Performance benchmarking guide

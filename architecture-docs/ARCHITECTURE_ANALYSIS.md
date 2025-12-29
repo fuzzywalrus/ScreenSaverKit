@@ -241,11 +241,25 @@ The architecture uses **in-place rendering** with render target swapping:
 @property (nonatomic) SSKParticleBlendMode blendMode;     // Alpha or Additive
 @property (nonatomic) NSPoint gravity;
 @property (nonatomic) CGFloat globalDamping;
+@property (nonatomic) CGFloat lengthMultiplier;            // For z-depth rendering
 @property (nonatomic, copy) SSKParticleUpdater updateHandler;  // Custom CPU updates
 @property (nonatomic, copy) SSKParticleRenderer renderHandler; // Custom CPU render
 @property (nonatomic) BOOL metalSimulationEnabled;
+@property (nonatomic) BOOL synchronizesMetalSimulation;   // Control GPU sync
+@property (nonatomic) BOOL synchronizesMetalSpawn;         // Control GPU spawn sync
 @property (nonatomic, readonly) NSUInteger aliveParticleCount;
 ```
+
+**GPU-Accelerated Particle Spawning**:
+- `spawnParticlesGPU:parameters:` - Hardware-accelerated batch particle initialization
+- Uses Metal compute shader (`initializeParticles` kernel) for parallel initialization
+- Supports parameterized spawning with `SSKParticleSpawnParameters` struct
+- **Z-Depth Support**: GPU spawn can calculate z-depth values for perspective effects
+  - Z-depth affects velocity (far drops move slower), length (far drops are shorter), and color (far drops are darker)
+  - All z-depth calculations performed in parallel on GPU
+- Thread group sizing optimized for GPU architecture (threadExecutionWidth × 8)
+- Asynchronous spawn option via `synchronizesMetalSpawn` property
+- Fallback kernel compilation if shader missing from library
 
 **Rendering through Metal**:
 ```objc
@@ -493,6 +507,10 @@ kPrefBloomThreshold: @(0.65)
 - **Async GPU work**: Particle simulation doesn't block CPU
 - **Dual rendering paths**: CPU and Metal options for particles
 - **Flexible parameters**: Effects configured via properties, not enums
+- **GPU-accelerated spawning**: Hardware-accelerated batch particle initialization
+- **Z-depth support**: Perspective effects calculated entirely on GPU
+- **Optimized thread groups**: Dynamic sizing based on GPU architecture
+- **Thread-safe index management**: Serial queue for free-list updates
 
 ### Weaknesses ✗
 - **Bloom-Blur coupling**: **RESOLVED** – bloom now resolves the blur stage dynamically via the effect registry and falls back to its own blur implementation when necessary.
@@ -509,3 +527,147 @@ kPrefBloomThreshold: @(0.65)
 4. Add configuration validation and error recovery
 5. Support effect ordering via configuration
 6. Consider metal pass graph API (Metal 3.1+) for better scheduling
+
+---
+
+## Testing Architecture
+
+### Test Suite Overview
+
+ScreenSaverKit includes a comprehensive test suite using XCTest framework, located in `/Tests/`. The test architecture mirrors the component structure and provides both unit and integration testing.
+
+**Test Organization**:
+- **Unit Tests**: Component-level tests for individual classes
+- **Integration Tests**: Cross-component interaction tests
+- **Performance Tests**: Benchmarking tools (see `PERFORMANCE_TESTING.md`)
+- **Metal Tests**: GPU-specific tests (skip automatically when Metal unavailable)
+
+### Test Components
+
+#### SSKParticleSystemTests
+- **Location**: `/Tests/SSKParticleSystemTests.m`
+- **Coverage**:
+  - Initialization and capacity management
+  - Particle spawning (CPU and GPU paths)
+  - Particle lifecycle (spawn, update, expiration)
+  - Index management and free-list reuse
+  - Behavior options (fade alpha, fade size)
+  - Metal simulation vs CPU simulation
+  - **GPU spawn with z-depth**: Tests z-depth parameter encoding and userScalar storage
+  - **GPU spawn without z-depth**: Verifies length multiplier sentinel encoding
+- **Metal-Specific Tests**: Automatically skip when Metal unavailable
+
+#### SSKMetalRendererTests
+- **Location**: `/Tests/SSKMetalRendererTests.m`
+- **Coverage**:
+  - Device creation and initialization
+  - Texture cache functionality
+  - Frame lifecycle (begin/end)
+  - Graceful fallback when Metal unavailable
+
+#### SSKMetalPassTests
+- **Location**: `/Tests/SSKMetalPassTests.m`
+- **Coverage**:
+  - Pass initialization and setup
+  - Device and library requirements
+  - Base pass interface compliance
+
+#### SSKVectorMathTests
+- **Location**: `/Tests/SSKVectorMathTests.m`
+- **Coverage**:
+  - Vector operations (addition, subtraction, scaling)
+  - Vector length and normalization
+  - Dot product calculations
+  - Edge cases (zero vectors, small vectors)
+
+#### SSKColorPaletteTests
+- **Location**: `/Tests/SSKColorPaletteTests.m`
+- **Coverage**:
+  - Palette creation and factory methods
+  - Empty and single-color palettes
+
+### Test Infrastructure
+
+#### TestHelpers
+- **Location**: `/Tests/TestHelpers.h/m`
+- **Utilities**:
+  - `createTempDirectory` - Temporary directory management
+  - `assertPoint:approximatelyEquals:epsilon:` - Floating-point point comparison
+  - `assertFloat:approximatelyEquals:epsilon:` - Floating-point comparison
+  - `waitForCondition:timeout:` - Async condition waiting
+  - `loadParticleShaderLibraryWithDevice:` - Metal shader library loading for tests
+
+#### Test Build System
+- **Location**: `/Tests/Makefile`
+- **Features**:
+  - Standalone build system (no Xcode project required)
+  - Supports both arm64 and x86_64 architectures
+  - Links against required frameworks (Metal, XCTest, etc.)
+  - Generates `.xctest` bundle for execution
+
+### Running Tests
+
+**Command Line**:
+```bash
+cd Tests
+make test
+```
+
+**Xcode**:
+- Open project in Xcode
+- Create test scheme if needed
+- Press Cmd+U to run all tests
+
+### Test Coverage by Component
+
+| Component | Unit Tests | Integration Tests | Metal Tests | Notes |
+|-----------|------------|-------------------|-------------|-------|
+| SSKParticleSystem | ✓ | ✓ | ✓ | Comprehensive coverage including GPU spawn |
+| SSKMetalRenderer | ✓ | - | ✓ | Tests Metal availability fallback |
+| SSKMetalPass | ✓ | - | ✓ | Base class interface tests |
+| SSKVectorMath | ✓ | - | - | Pure math, no Metal dependency |
+| SSKColorPalette | ✓ | - | - | No Metal dependency |
+
+### Testing Patterns
+
+1. **Metal Availability Checks**: Tests that require Metal automatically skip when unavailable
+   ```objc
+   if (![TestHelpers loadParticleShaderLibraryWithDevice:device]) {
+       NSLog(@"Skipping Metal test - Metal unavailable");
+       return;
+   }
+   ```
+
+2. **Async Testing**: Uses `waitForCondition:timeout:` for GPU completion handlers
+   ```objc
+   BOOL completed = [SSKTestHelpers waitForCondition:^BOOL{
+       return particleCount > 0;
+   } timeout:2.0];
+   ```
+
+3. **Floating-Point Comparison**: Uses epsilon-based comparison for particle positions/velocities
+   ```objc
+   [SSKTestHelpers assertPoint:particle.position 
+            approximatelyEquals:expectedPosition 
+                       epsilon:0.001];
+   ```
+
+### Performance Testing
+
+Separate from unit tests, performance testing is documented in `PERFORMANCE_TESTING.md` and includes:
+- **Performance Benchmark Screensaver**: Real-time FPS/metrics visualization
+- **Standalone Benchmark Tool**: Automated regression testing
+- **Metrics**: FPS, frame time, particle spawn time, GPU utilization
+
+### Test Maintenance
+
+When adding new features:
+1. Add unit tests for new functionality
+2. Add Metal-specific tests if GPU-accelerated (with availability checks)
+3. Update test coverage documentation
+4. Ensure tests pass on both architectures (arm64, x86_64)
+
+**Recent Test Additions**:
+- Z-depth GPU spawn tests (verify userScalar encoding)
+- Length multiplier sentinel tests
+- Metal spawn parameter validation tests

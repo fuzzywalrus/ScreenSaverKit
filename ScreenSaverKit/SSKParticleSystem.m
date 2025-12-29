@@ -39,6 +39,14 @@ typedef struct {
     float padding;
 } SSKParticleSimulationUniforms;
 
+static inline BOOL SSKShouldCullParticle(const SSKParticleSystem *system, vector_float2 position) {
+    if (!system || !system.isCullingEnabled || CGRectIsEmpty(system.cullingRect)) {
+        return NO;
+    }
+    CGRect expanded = CGRectInset(system.cullingRect, -system.cullingMargin, -system.cullingMargin);
+    return !CGRectContainsPoint(expanded, CGPointMake(position.x, position.y));
+}
+
 static NSString * const kSSKParticleComputeTemplate =
 @"#include <metal_stdlib>\\n"
 "using namespace metal;\\n"
@@ -332,6 +340,10 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         _blendMode = SSKParticleBlendModeAlpha;
         _gravity = NSZeroPoint;
         _globalDamping = 0.0;
+        _cullingEnabled = NO;
+        _cullingRect = CGRectZero;
+        _cullingMargin = 0.0;
+        _lengthMultiplier = 8.0;
         _synchronizesMetalSimulation = YES;
         _synchronizesMetalSpawn = YES;
 
@@ -526,11 +538,11 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
 }
 
 - (NSUInteger)aliveParticleCount {
-    NSUInteger count = 0;
-    for (NSUInteger i = 0; i < self.capacity; i++) {
-        if (self.states[i].alive) { count++; }
+    NSUInteger freeCount = self.freeIndicesStack.count;
+    if (freeCount > self.capacity) {
+        freeCount = self.capacity;
     }
-    return count;
+    return self.capacity - freeCount;
 }
 
 - (void)spawnParticles:(NSUInteger)count initializer:(SSKParticleInitializer)initializer {
@@ -839,6 +851,13 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         state->position += state->velocity * (float)dt;
         state->rotation += state->rotationVelocity * (float)dt;
 
+        if (SSKShouldCullParticle(self, state->position)) {
+            state->alive = 0u;
+            [self.freeIndicesStack addObject:@(idx)];
+            [self.availableIndices addIndex:idx];
+            continue;
+        }
+
         float velocityLengthSquared = simd_length_squared(state->velocity);
         if (velocityLengthSquared > 0.0001f) {
             state->userVector = simd_normalize(state->velocity);
@@ -864,7 +883,11 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     [encoder setBuffer:self.particleBuffer offset:0 atIndex:0];
     [encoder setBuffer:self.uniformsBuffer offset:0 atIndex:1];
 
-    NSUInteger threadCount = self.capacity;
+    NSUInteger aliveCount = [self aliveParticleCount];
+    if (aliveCount == 0) {
+        return;
+    }
+    NSUInteger threadCount = aliveCount;
     NSUInteger threadWidth = MAX(self.computePipeline.threadExecutionWidth, (NSUInteger)1);
     NSUInteger maxThreads = MAX(self.computePipeline.maxTotalThreadsPerThreadgroup, (NSUInteger)1);
     NSUInteger threadGroupSize = MIN(maxThreads, threadWidth * 8); // heuristic multiple of SIMD width
@@ -883,7 +906,11 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
             // Only add indices that are dead AND not already in availableIndices
             // This prevents duplicates when particles die, get reused, then die again
             for (NSUInteger idx = 0; idx < strongSelf.capacity; idx++) {
-                if (!strongSelf.states[idx].alive && ![strongSelf.availableIndices containsIndex:idx]) {
+                SSKParticleState *state = &strongSelf.states[idx];
+                if (SSKShouldCullParticle(strongSelf, state->position)) {
+                    state->alive = 0u;
+                }
+                if (!state->alive && ![strongSelf.availableIndices containsIndex:idx]) {
                     // Phase 3: O(1) deallocation to stack - only add newly dead particles
                     [strongSelf.freeIndicesStack addObject:@(idx)];
                     [strongSelf.availableIndices addIndex:idx];

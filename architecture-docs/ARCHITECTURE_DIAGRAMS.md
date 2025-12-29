@@ -137,19 +137,28 @@ SSKMetalRenderer (Coordinator)
 │ SSKParticleSystem       │
 │ (CPU-side particle data)│
 └─────────────────────────┘
-           │
-    ┌──────┴──────┐
-    │             │
-    ▼             ▼
+          │
+   ┌──────┴──────┐
+   │             │
+   ▼             ▼
 CPU Path      GPU Path
 (CGContext)   (Metal)
-    │             │
-    │             ▼
-    │   SSKMetalParticleRenderer
-    │         │
-    │         ├─ Core: SSKMetalRenderer
-    │         │
-    │         ├─ Frame sequence:
+   │             │
+   │             ▼
+   │   SSKMetalParticleRenderer
+   │         │
+   │         ├─ Core: SSKMetalRenderer
+   │         │
+   │         ├─ Spawn Paths:
+   │         │   ├─ CPU: spawnParticles:initializer:
+   │         │   └─ GPU: spawnParticlesGPU:parameters:
+   │         │       └─ initializeParticles kernel
+   │         │           ├─ Z-depth calculation (if enabled)
+   │         │           ├─ Velocity scaling (velocity *= zDepth)
+   │         │           ├─ Color darkening (brightness *= factor)
+   │         │           └─ Parallel initialization
+   │         │
+   │         ├─ Frame sequence:
     │         │  ├─ beginFrame()
     │         │  ├─ drawParticles()
     │         │  ├─ applyBlur() [opt]
@@ -180,6 +189,14 @@ SSKParticleShaders.metal (source)
          ├─ Particle Fragment Shader
          │  └─ particleFragment()
          │     - Compute soft disc with Gaussian
+         │
+         ├─ Particle Initialization Kernel
+         │  └─ initializeParticles()
+         │     - Parallel batch particle spawn
+         │     - Z-depth calculation (if enabled)
+         │     - Velocity scaling (velocity *= zDepth)
+         │     - Color darkening (brightness *= factor)
+         │     - Stores z-depth in userScalar
          │
          ├─ Blur Compute Kernels
          │  ├─ gaussianBlurHorizontal()

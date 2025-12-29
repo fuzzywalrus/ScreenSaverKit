@@ -314,6 +314,53 @@
     XCTAssertEqual(particles.count, 10);
 }
 
+- (void)testCullingRemovesParticlesOutsideRectOnCPU {
+    SSKParticleSystem *system = [[SSKParticleSystem alloc] initWithCapacity:4];
+    system.metalSimulationEnabled = NO;
+    system.cullingEnabled = YES;
+    system.cullingRect = CGRectMake(0, 0, 100, 100);
+    system.cullingMargin = 0.0;
+    
+    [system spawnParticles:2 initializer:^(SSKParticle *particle) {
+        particle.position = NSMakePoint(200.0, 200.0); // well outside
+        particle.velocity = NSZeroPoint;
+        particle.maxLife = 10.0;
+    }];
+    
+    [system advanceBy:0.016];
+    
+    XCTAssertEqual(system.aliveParticleCount, 0u);
+    XCTAssertEqual(system.aliveParticlesSnapshot.count, 0u);
+}
+
+- (void)testCullingKeepsParticlesInsideRectAndRemovesOutside {
+    SSKParticleSystem *system = [[SSKParticleSystem alloc] initWithCapacity:4];
+    system.metalSimulationEnabled = NO;
+    system.cullingEnabled = YES;
+    system.cullingRect = CGRectMake(0, 0, 100, 100);
+    system.cullingMargin = 5.0;
+    
+    [system spawnParticles:2 initializer:^(SSKParticle *particle) {
+        static BOOL first = YES;
+        if (first) {
+            particle.position = NSMakePoint(50.0, 50.0); // inside
+            first = NO;
+        } else {
+            particle.position = NSMakePoint(150.0, 150.0); // outside
+        }
+        particle.velocity = NSZeroPoint;
+        particle.maxLife = 10.0;
+    }];
+    
+    [system advanceBy:0.016];
+    
+    XCTAssertEqual(system.aliveParticleCount, 1u);
+    NSArray<SSKParticle *> *alive = [system aliveParticlesSnapshot];
+    XCTAssertEqual(alive.count, 1u);
+    XCTAssertEqualWithAccuracy(alive.firstObject.position.x, 50.0, 0.001);
+    XCTAssertEqualWithAccuracy(alive.firstObject.position.y, 50.0, 0.001);
+}
+
 - (void)testMetalSimulationSynchronizesSnapshotWhenEnabled {
     SSKParticleSystem *system = [[SSKParticleSystem alloc] initWithCapacity:8];
     if (!system.isMetalSimulationEnabled) {

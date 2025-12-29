@@ -145,6 +145,12 @@ typedef void (^SSKParticleRenderer)(CGContextRef ctx, SSKParticle *particle);
 /// Extra damping applied uniformly to all particles each update (per-second factor).
 @property (nonatomic) CGFloat globalDamping;
 
+/// Optional culling rectangle in particle space; when enabled, particles outside (expanded by
+/// `cullingMargin`) are killed to reduce simulation and render cost. Disabled by default.
+@property (nonatomic) CGRect cullingRect;
+@property (nonatomic) CGFloat cullingMargin;
+@property (nonatomic, getter=isCullingEnabled) BOOL cullingEnabled;
+
 /// Length multiplier used for rendering when z-depth is enabled (default: 8.0).
 /// This is automatically set when spawning particles with z-depth enabled.
 @property (nonatomic) CGFloat lengthMultiplier;

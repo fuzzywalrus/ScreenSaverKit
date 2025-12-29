@@ -81,6 +81,11 @@ Includes:
 2. Study: Texture Cache section
 3. Deep dive: **ARCHITECTURE_ANALYSIS.md** (Particle System Integration section)
 
+### "I want to understand the test suite"
+1. Read: **ARCHITECTURE_ANALYSIS.md** (Testing Architecture section)
+2. Reference: `/Tests/README.md` for test organization and running tests
+3. Code: `/Tests/SSKParticleSystemTests.m` for example test patterns
+
 ---
 
 ## Key Concepts Summary
@@ -107,6 +112,13 @@ Particles (CPU/GPU) → Render to drawable → Optional blur → Optional bloom 
 - **Async GPU**: Particle simulation no longer blocks CPU (commit be49dc9)
 - **FX Passes**: Refactored from monolithic renderer to pass-based (commit 2a174b8)
 - **Configurable Bloom**: Added intensity parameter (commit 02d119e)
+- **GPU Z-Depth**: Hardware-accelerated perspective depth effects in particle spawning
+  - Velocity, length, and color scaling based on z-depth
+  - All calculations performed in parallel on GPU
+  - See Rain screensaver demo for example usage
+- **Optimized Thread Groups**: Dynamic sizing based on GPU architecture (`threadExecutionWidth × 8`)
+- **Thread-Safe Free-List**: Serial queue for particle index management
+- **Fallback Kernel Compilation**: Automatic recompilation if shader missing
 
 ---
 
@@ -143,6 +155,12 @@ Particles (CPU/GPU) → Render to drawable → Optional blur → Optional bloom 
 - **Analysis**: ARCHITECTURE_ANALYSIS.md → "Current Architecture Overview" → "SSKMetalPass"
 - **Diagram**: ARCHITECTURE_DIAGRAMS.md → "Class Relationships"
 - **Guide**: EFFECT_IMPLEMENTATION_GUIDE.md → "Adding a New Effect" (Step 1)
+
+#### Testing Infrastructure
+- **Analysis**: ARCHITECTURE_ANALYSIS.md → "Testing Architecture"
+- **Tests**: `/Tests/` directory with XCTest-based test suite
+- **Coverage**: Unit tests for all major components, Metal-specific tests with fallback
+- **Performance**: See `PERFORMANCE_TESTING.md` for performance benchmarking tools
 
 ---
 
@@ -192,18 +210,20 @@ All examples include:
 
 ### Related Source Files
 - `/ScreenSaverKit/SSKMetalRenderer.h` - Public API reference
-- `/ScreenSaverKit/Shaders/SSKParticleShaders.metal` - Shader implementations
+- `/ScreenSaverKit/Shaders/SSKParticleShaders.metal` - Shader implementations (includes z-depth kernels)
+- `/ScreenSaverKit/SSKParticleSystem.h` - Particle system API (includes spawn parameters)
 - `/Demos/RibbonFlow/RibbonFlowView.m` - Real-world usage example
+- `/Demos/Rain/RainView.m` - Z-depth implementation example
 
 ---
 
 ## Document Maintenance Notes
 
-These documents were generated: **2025-11-05**
+These documents were last updated: **2025-01-XX**
 
 Based on codebase state:
 - Current branch: `main`
-- Latest commit: `02d119e` (Adding bloom intensity)
+- Latest features: GPU-accelerated z-depth, optimized particle spawning
 - Key refactor: `2a174b8` (FX Passes architecture)
 
 The documentation covers:
@@ -211,6 +231,8 @@ The documentation covers:
 - Current architectural patterns and issues
 - Implementation patterns and examples
 - Recent optimizations and improvements
+- GPU-accelerated z-depth support for perspective effects
+- Particle spawn optimizations (thread groups, async spawn, fallback compilation)
 
 If you modify the rendering system, please update:
 1. Relevant diagram in ARCHITECTURE_DIAGRAMS.md

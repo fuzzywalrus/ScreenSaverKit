@@ -90,6 +90,22 @@ Keeping these concerns in one place lets each screensaver focus on drawing and b
 - `SSKMetalRenderer` + `SSKMetalEffectStage` – extensible Metal post-processing effect system. Register custom effect passes (blur, bloom, color grading, etc.) without modifying framework code. Supports dynamic effect chains with configurable parameters. Built-in blur and bloom effects included. See `architecture-docs/EFFECT_IMPLEMENTATION_GUIDE.md` for detailed documentation on creating custom Metal shader effects.
 - `SSKMetalRenderDiagnostics` – real-time Metal rendering diagnostics overlay. Tracks rendering success/failure rates, displays device/layer/renderer status, and shows FPS. Automatically renders a semi-transparent overlay on your CAMetalLayer for debugging Metal pipeline issues. Perfect for development and troubleshooting GPU initialization problems. See `Demos/MetalParticleTest/` for usage example.
 
+## Architecture Documentation
+
+For detailed information about ScreenSaverKit's internal architecture, see the **[Architecture Documentation Index](architecture-docs/ARCHITECTURE_INDEX.md)** which provides:
+
+- **[Architecture Analysis](architecture-docs/ARCHITECTURE_ANALYSIS.md)** – In-depth technical analysis of the effect chaining system, Metal rendering pipeline, particle system integration, and design patterns
+- **[Architecture Diagrams](architecture-docs/ARCHITECTURE_DIAGRAMS.md)** – Visual component relationships, rendering pipelines, and dependency graphs
+- **[Effect Implementation Guide](architecture-docs/EFFECT_IMPLEMENTATION_GUIDE.md)** – Step-by-step guide for creating custom Metal effects, understanding the rendering flow, and debugging tips
+
+The architecture docs cover:
+- FX Pass-based architecture (Particle, Blur, Bloom passes)
+- Metal shader organization and compute kernels
+- Texture cache strategy and memory management
+- GPU-accelerated particle spawning with z-depth support
+- Testing architecture and test coverage
+- Performance optimizations and recent improvements
+
 ## Using Metal-Accelerated Particles
 
 The particle system supports both CPU (Core Graphics) and GPU (Metal) rendering modes:
