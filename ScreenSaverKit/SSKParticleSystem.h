@@ -79,6 +79,13 @@ typedef struct {
     uint32_t behaviorOptions;
     /// Size over life range (start multiplier, end multiplier).
     vector_float2 sizeOverLifeRange;
+    /// Z-depth enabled flag (0 = disabled, 1 = enabled).
+    uint32_t zDepthEnabled;
+    /// Z-depth scale factor (0.1-100.0).
+    float zDepthScale;
+    /// Length multiplier for rain drops.
+    float lengthMultiplier;
+    float padding2; // Align to 16 bytes
 } SSKParticleSpawnParameters;
 
 NS_INLINE SSKParticleSpawnParameters SSKParticleSpawnParametersMake(void) {
@@ -89,6 +96,9 @@ NS_INLINE SSKParticleSpawnParameters SSKParticleSpawnParametersMake(void) {
     params.colorMin = (vector_float4){1.0f, 1.0f, 1.0f, 1.0f};
     params.colorMax = (vector_float4){1.0f, 1.0f, 1.0f, 1.0f};
     params.sizeOverLifeRange = (vector_float2){1.0f, 1.0f};
+    params.zDepthEnabled = 0;
+    params.zDepthScale = 1.0f;
+    params.lengthMultiplier = 8.0f;
     return params;
 }
 
@@ -135,7 +145,11 @@ typedef void (^SSKParticleRenderer)(CGContextRef ctx, SSKParticle *particle);
 /// Extra damping applied uniformly to all particles each update (per-second factor).
 @property (nonatomic) CGFloat globalDamping;
 
-/// Called for each alive particle every update tick. Assign to customise behaviour.
+/// Length multiplier used for rendering when z-depth is enabled (default: 8.0).
+/// This is automatically set when spawning particles with z-depth enabled.
+@property (nonatomic) CGFloat lengthMultiplier;
+
+/// Called for each alive particle each update tick. Assign to customise behaviour.
 /// Setting this property disables the Metal simulation path and forces CPU updates.
 @property (nonatomic, copy, nullable) SSKParticleUpdater updateHandler;
 

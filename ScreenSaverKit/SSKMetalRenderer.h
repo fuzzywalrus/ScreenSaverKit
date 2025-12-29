@@ -99,6 +99,9 @@ FOUNDATION_EXPORT NSString * const SSKMetalEffectIdentifierColorGrading;
 /// Sigma used for the bloom blur pass. Defaults to 3.0.
 @property (nonatomic) CGFloat bloomBlurSigma;
 
+/// Particle pass used for rendering particles. Exposed for configuration.
+@property (nonatomic, strong, readonly) SSKMetalParticlePass *particlePass;
+
 @end
 
 NS_ASSUME_NONNULL_END

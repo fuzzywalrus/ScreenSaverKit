@@ -102,6 +102,10 @@ struct SpawnParameters {
     uint behaviorOptions;
     float padding1;         // Align to 16 bytes for float2
     float2 sizeOverLifeRange;
+    uint zDepthEnabled;
+    float zDepthScale;
+    float lengthMultiplier;
+    float padding2;         // Align to 16 bytes
 };
 
 // Simple hash-based random number generator for GPU
@@ -180,8 +184,30 @@ kernel void initializeParticles(device ParticleState *particles [[buffer(0)]],
     // Generate spawn position
     state.position = generateSpawnPosition(id, params);
     
-    // Generate velocity
+    // Generate z-depth first (needed for velocity scaling)
+    float zDepth = 1.0f;
+    if (params.zDepthEnabled != 0u) {
+        float zRandom = hashRandom(id * 7919 + 56789);
+        // Map scale to a nearer minimum, but keep a floor so distant drops aren't comically slow.
+        // scale 1 -> minZ ~0.5, scale 100 -> minZ ~0.2 (floor)
+        float minZ = max(0.2f, 1.0f / (params.zDepthScale + 1.0f));
+        zDepth = mix(minZ, 1.0f, zRandom); // Range: minZ (far) to 1.0 (close)
+        zDepth = clamp(zDepth, 0.01f, 1.0f);
+        // Store z-depth in userScalar
+        state.userScalar = zDepth;
+    } else {
+        // Store length multiplier in userScalar (>10.0 indicates no z-depth)
+        state.userScalar = 10.0f + params.lengthMultiplier;
+    }
+    
+    // Generate velocity and scale by z-depth for perspective effect
+    // Further drops (lower z-depth) move slower to create depth illusion
     state.velocity = generateVelocity(id, params);
+    if (params.zDepthEnabled != 0u) {
+        // Scale velocity by z-depth: far drops (0.1) move 10% speed, close drops (1.0) move 100% speed
+        // This creates the perspective illusion where distant objects appear to move slower
+        state.velocity *= zDepth;
+    }
     state.userVector = normalize(state.velocity);
     
     // Generate size
@@ -197,6 +223,12 @@ kernel void initializeParticles(device ParticleState *particles [[buffer(0)]],
     // Generate color
     float4 colorRnd = hashRandom4(id * 7919 + 56789);
     state.color = mix(params.colorMin, params.colorMax, colorRnd);
+    
+    // Apply z-depth darkening to color if enabled (further = darker)
+    if (params.zDepthEnabled != 0u) {
+        float darkenFactor = 0.3f + zDepth * 0.7f; // Far = 30% brightness, close = 100%
+        state.color.rgb *= darkenFactor;
+    }
     state.baseColor = state.color;
     
     // Generate rotation velocity

@@ -1,10 +1,10 @@
 #import "SSKAnimationClock.h"
 
-static const NSTimeInterval kSSKMinDelta = 1.0 / 240.0;  // cap at 240fps
 static const NSTimeInterval kSSKMaxDelta = 1.0 / 10.0;   // floor around 10fps to avoid huge jumps
 static const double kSSKSmoothingFactor = 0.15;          // exponential moving average
 
 @interface SSKAnimationClock ()
+@property (nonatomic) NSTimeInterval minimumDelta;
 @property (nonatomic) NSTimeInterval lastTimestamp;
 @property (nonatomic, readwrite) NSTimeInterval deltaTime;
 @property (nonatomic) double smoothedDelta;
@@ -15,6 +15,8 @@ static const double kSSKSmoothingFactor = 0.15;          // exponential moving a
 
 - (instancetype)init {
     if ((self = [super init])) {
+        _maximumFramesPerSecond = 240.0;
+        _minimumDelta = 1.0 / _maximumFramesPerSecond;
         _lastTimestamp = 0;
         _deltaTime = 1.0 / 60.0;
         _smoothedDelta = _deltaTime;
@@ -28,6 +30,14 @@ static const double kSSKSmoothingFactor = 0.15;          // exponential moving a
     self.deltaTime = 1.0 / 60.0;
     self.smoothedDelta = self.deltaTime;
     self.framesPerSecond = 60.0;
+}
+
+- (void)setMaximumFramesPerSecond:(double)maximumFramesPerSecond {
+    if (maximumFramesPerSecond < 1.0) {
+        maximumFramesPerSecond = 1.0;
+    }
+    _maximumFramesPerSecond = maximumFramesPerSecond;
+    self.minimumDelta = 1.0 / maximumFramesPerSecond;
 }
 
 - (NSTimeInterval)stepWithTimestamp:(NSTimeInterval)timestamp {
@@ -45,7 +55,7 @@ static const double kSSKSmoothingFactor = 0.15;          // exponential moving a
     NSTimeInterval raw = timestamp - self.lastTimestamp;
     self.lastTimestamp = timestamp;
     
-    NSTimeInterval clamped = MAX(kSSKMinDelta, MIN(raw, kSSKMaxDelta));
+    NSTimeInterval clamped = MAX(self.minimumDelta, MIN(raw, kSSKMaxDelta));
     self.deltaTime = clamped;
     
     // Exponential smoothing for FPS readout

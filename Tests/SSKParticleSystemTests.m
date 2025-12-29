@@ -641,4 +641,52 @@
     XCTAssertEqual(system.aliveParticleCount, 0u);
 }
 
+- (void)testGPUSpawnWithZDepthEncodesDepthInUserScalar {
+    SSKParticleSystem *system = [[SSKParticleSystem alloc] initWithCapacity:32];
+    if (!system.isMetalSimulationEnabled) {
+        XCTSkip(@"Metal simulation unavailable on this system");
+    }
+    
+    SSKParticleSpawnParameters params = SSKParticleSpawnParametersMake();
+    params.zDepthEnabled = 1;
+    params.zDepthScale = 1.5f;       // allow some spread
+    params.lengthMultiplier = 6.0f;  // independent length control
+    
+    NSUInteger spawned = [system spawnParticlesGPU:16 parameters:params];
+    XCTAssertGreaterThan(spawned, 0u);
+    
+    NSArray<SSKParticle *> *particles = [system aliveParticlesSnapshot];
+    XCTAssertGreaterThan(particles.count, 0u);
+    
+    for (SSKParticle *particle in particles) {
+        // userScalar stores z-depth in [~0.01, 1.0] when z-depth is enabled
+        XCTAssertGreaterThanOrEqual(particle.userScalar, 0.01);
+        XCTAssertLessThanOrEqual(particle.userScalar, 1.0);
+    }
+}
+
+- (void)testGPUSpawnWithoutZDepthEncodesLengthMultiplierInUserScalar {
+    SSKParticleSystem *system = [[SSKParticleSystem alloc] initWithCapacity:32];
+    if (!system.isMetalSimulationEnabled) {
+        XCTSkip(@"Metal simulation unavailable on this system");
+    }
+    
+    SSKParticleSpawnParameters params = SSKParticleSpawnParametersMake();
+    params.zDepthEnabled = 0;
+    params.lengthMultiplier = 7.5f;
+    
+    NSUInteger spawned = [system spawnParticlesGPU:8 parameters:params];
+    XCTAssertGreaterThan(spawned, 0u);
+    
+    NSArray<SSKParticle *> *particles = [system aliveParticlesSnapshot];
+    XCTAssertGreaterThan(particles.count, 0u);
+    
+    for (SSKParticle *particle in particles) {
+        // Sentinel encoding: >10 means no z-depth; value minus 10 is the length multiplier
+        XCTAssertGreaterThan(particle.userScalar, 10.0);
+        CGFloat decoded = particle.userScalar - 10.0;
+        XCTAssertEqualWithAccuracy(decoded, params.lengthMultiplier, 0.5);
+    }
+}
+
 @end

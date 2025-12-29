@@ -21,7 +21,7 @@ NSString * const SSKMetalEffectIdentifierColorGrading = @"com.ssk.effects.colorg
 @property (nonatomic, strong, readwrite) SSKMetalTextureCache *textureCache;
 @property (nonatomic, readwrite) CGSize drawableSize;
 @property (nonatomic, strong) id<MTLLibrary> shaderLibrary;
-@property (nonatomic, strong) SSKMetalParticlePass *particlePass;
+@property (nonatomic, strong, readwrite) SSKMetalParticlePass *particlePass;
 @property (nonatomic, strong, nullable) SSKMetalBlurPass *blurPass;
 @property (nonatomic, strong, nullable) SSKMetalBloomPass *bloomPass;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, SSKMetalEffectStage *> *effectRegistry;

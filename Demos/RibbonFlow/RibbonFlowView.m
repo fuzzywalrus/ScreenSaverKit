@@ -893,7 +893,7 @@ typedef struct {
     NSInteger fps = frameRateString.length ? frameRateString.integerValue : 30;
     if (fps != 60) { fps = 30; }
     self.targetFramesPerSecond = fps;
-    self.animationTimeInterval = 1.0 / MAX(1, fps);
+    [self updateFrameTimingForTargetFPS];
 
     if (newEmitterCount != self.emitterCount || (changedKeys && [changedKeys containsObject:kPrefEmitterCount])) {
         self.emitterCount = newEmitterCount;

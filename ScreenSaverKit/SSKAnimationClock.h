@@ -5,6 +5,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// Tracks frame-to-frame timing with optional smoothing and pause support.
 @interface SSKAnimationClock : NSObject
 
+/// Maximum FPS used to clamp dt to a reasonable minimum (defaults to 240).
+@property (nonatomic) double maximumFramesPerSecond;
+
 /// Last computed delta (seconds).
 @property (nonatomic, readonly) NSTimeInterval deltaTime;
 

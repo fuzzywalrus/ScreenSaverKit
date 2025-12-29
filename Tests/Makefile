@@ -16,7 +16,7 @@ CC := xcrun --sdk macosx clang
 CFLAGS := -Wall -Wextra -O2 -fobjc-arc -fmodules -arch arm64 -arch x86_64 \
 	-fmodules-cache-path=$(MODULE_CACHE_DIR) $(KIT_INCLUDE) -isysroot $(SDKROOT) $(FRAMEWORK_DIRS)
 LDFLAGS := -Wl,-dead_strip $(FRAMEWORK_DIRS)
-FRAMEWORKS := -framework Foundation -framework XCTest -framework Cocoa -framework QuartzCore -framework Metal -framework ScreenSaver
+FRAMEWORKS := -framework Foundation -framework XCTest -framework Cocoa -framework QuartzCore -framework CoreVideo -framework Metal -framework ScreenSaver
 
 TEST_SOURCES := \
 	$(CURRENT_DIR)/TestHelpers.m \

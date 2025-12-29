@@ -28,6 +28,13 @@ typedef struct {
 
 @implementation SSKMetalParticlePass
 
+- (instancetype)init {
+    if ((self = [super init])) {
+        _lengthMultiplier = 8.0; // Default value
+    }
+    return self;
+}
+
 - (BOOL)setupWithDevice:(id<MTLDevice>)device library:(id<MTLLibrary>)library {
     NSParameterAssert(device);
     NSParameterAssert(library);
@@ -83,10 +90,33 @@ typedef struct {
         data.direction = dir;
         float width = MAX(1.0f, (float)particle.size);
         data.width = width;
-        data.length = width * 12.0f;
-
+        
+        // Calculate length from userScalar
+        // If userScalar > 10.0, it's a length multiplier (no z-depth): length = width * (userScalar - 10.0)
+        // If userScalar <= 1.0, it's z-depth (0.1-1.0): length = width * lengthMultiplier * userScalar
+        // Default length multiplier is 8.0 if we can't determine it
+        float userScalar = (float)particle.userScalar;
+        float lengthMultiplier = 8.0f; // Default
+        float zDepth = 1.0f;
+        
+        if (userScalar > 10.0f) {
+            // No z-depth: userScalar contains length multiplier
+            lengthMultiplier = userScalar - 10.0f;
+            data.length = width * lengthMultiplier;
+        } else if (userScalar >= 0.1f && userScalar <= 1.0f) {
+            // Z-depth enabled: userScalar contains z-depth
+            zDepth = userScalar;
+            // Use the length multiplier from the render pass property
+            lengthMultiplier = (float)self.lengthMultiplier;
+            data.length = width * lengthMultiplier * zDepth; // Further drops are shorter
+        } else {
+            // Fallback: use default
+            data.length = width * lengthMultiplier;
+        }
+        
         data.color = [particle metalColorVector];
-        float softness = (float)particle.userScalar;
+        // Use userScalar as softness only if it's not z-depth (z-depth uses 0 for hard edges)
+        float softness = (userScalar > 10.0f || userScalar < 0.1f) ? userScalar : 0.0f;
         if (!isfinite(softness) || softness < 0.0f) {
             softness = 0.0f;
         }

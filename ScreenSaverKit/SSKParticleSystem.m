@@ -390,7 +390,43 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         library = [device newLibraryWithURL:metallibURL error:&error];
     }
     
-    // Fallback to source compilation if bundle library not available
+    // Fallback: compile full shader source if metallib missing
+    if (!library) {
+        NSString *metalSourcePath = [bundle pathForResource:@"SSKParticleShaders" ofType:@"metal"];
+        if (!metalSourcePath) {
+            // Walk upwards and check current directory for source (common in tests/demos)
+            NSString *probe = bundle.bundlePath;
+            for (NSUInteger i = 0; i < 5 && probe.length > 1; i++) {
+                NSString *candidate = [probe stringByAppendingPathComponent:@"ScreenSaverKit/Shaders/SSKParticleShaders.metal"];
+                if ([[NSFileManager defaultManager] fileExistsAtPath:candidate]) {
+                    metalSourcePath = candidate;
+                    break;
+                }
+                probe = [probe stringByDeletingLastPathComponent];
+            }
+            if (!metalSourcePath) {
+                NSString *cwd = [[NSFileManager defaultManager] currentDirectoryPath];
+                NSString *candidate = [cwd stringByAppendingPathComponent:@"ScreenSaverKit/Shaders/SSKParticleShaders.metal"];
+                if ([[NSFileManager defaultManager] fileExistsAtPath:candidate]) {
+                    metalSourcePath = candidate;
+                }
+            }
+        }
+        if (metalSourcePath.length > 0) {
+            NSError *readError = nil;
+            NSString *source = [NSString stringWithContentsOfFile:metalSourcePath encoding:NSUTF8StringEncoding error:&readError];
+            if (!source) {
+                NSLog(@"SSKParticleSystem: failed to read Metal source at %@ (%@).", metalSourcePath, readError.localizedDescription ?: @"unknown error");
+            } else {
+                library = [device newLibraryWithSource:source options:nil error:&error];
+                if (!library) {
+                    NSLog(@"SSKParticleSystem: failed to compile Metal source at %@ (%@).", metalSourcePath, error.localizedDescription ?: @"unknown error");
+                }
+            }
+        }
+    }
+    
+    // Fallback to template for simulateParticles only if nothing else worked
     if (!library) {
         NSString *source = [NSString stringWithFormat:kSSKParticleComputeTemplate,
                             kSSKParticleBehaviorFadeAlpha,
@@ -638,6 +674,10 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         uint32_t behaviorOptions;
         float padding1; // Align to 16 bytes for vector_float2
         vector_float2 sizeOverLifeRange;
+        uint32_t zDepthEnabled;
+        float zDepthScale;
+        float lengthMultiplier;
+        float padding2; // Align to 16 bytes
     } MetalSpawnParameters;
     
     MetalSpawnParameters metalParams = {0};
@@ -657,6 +697,17 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     metalParams.dampingRange = parameters.dampingRange;
     metalParams.behaviorOptions = parameters.behaviorOptions;
     metalParams.sizeOverLifeRange = parameters.sizeOverLifeRange;
+    metalParams.zDepthEnabled = parameters.zDepthEnabled;
+    // Clamp to reasonable ranges to avoid degenerate lengths or fully collapsed depth.
+    float clampedScale = fminf(fmaxf(parameters.zDepthScale, 0.1f), 100.0f);
+    float clampedLengthMult = fmaxf(parameters.lengthMultiplier, 0.1f);
+    metalParams.zDepthScale = clampedScale;
+    metalParams.lengthMultiplier = clampedLengthMult;
+    
+    // Store length multiplier for renderer access when z-depth is enabled
+    if (parameters.zDepthEnabled != 0) {
+        self.lengthMultiplier = clampedLengthMult;
+    }
     
     id<MTLBuffer> paramsBuffer = [self.metalDevice newBufferWithBytes:&metalParams
                                                                 length:sizeof(MetalSpawnParameters)

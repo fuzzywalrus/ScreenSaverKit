@@ -11,6 +11,7 @@ Welcome to ScreenSaverKit! This tutorial will guide you through creating your fi
 - How to create hardware-accelerated particle effects with Metal
 - How to create your own custom screen saver from scratch
 - Advanced features like color palettes, vector math, and asset management
+- Advanced toggles for Metal simulation and spawning (sync vs async)
 
 ## What is ScreenSaverKit?
 
@@ -575,3 +576,10 @@ If you create something cool with ScreenSaverKit, consider:
 - Writing about your development experience
 
 Happy screen saver building!
+
+## Advanced Notes
+
+- **Metal sync controls**: `SSKParticleSystem` exposes `synchronizesMetalSimulation` and `synchronizesMetalSpawn`. Leave them `YES` for correctness (CPU snapshots see same-frame data and GPU spawns block until complete). Set to `NO` for maximum throughput and handle results a frame later.
+- **GPU fallback**: The particle system and renderer automatically fall back to CPU paths if `MTLCreateSystemDefaultDevice()` is unavailable or shaders can’t be loaded. In headless CI or VMs, Metal tests may be skipped.
+- **Thread group tuning**: Threadgroup sizes are derived from device capabilities (no hardcoded 128). You can further tune for your hardware if profiling suggests a better multiple of `threadExecutionWidth`.
+- **Idle cleanup**: When animation stops, caches are cleared (asset cache, Metal texture cache) and Metal renderer is torn down. You can reset your particle system or trim caches on `stopAnimation` to free additional memory when idle.
