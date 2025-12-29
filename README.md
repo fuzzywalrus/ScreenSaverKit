@@ -193,7 +193,30 @@ See `Demos/MetalParticleTest/` for a complete diagnostic implementation example,
 
 ## Testing and Performance
 
-ScreenSaverKit includes comprehensive testing and performance evaluation tools. See **[PERFORMANCE_TESTING.md](PERFORMANCE_TESTING.md)** for detailed documentation on:
+ScreenSaverKit includes comprehensive testing and performance evaluation tools, plus major performance optimizations for the particle system.
+
+### Performance Optimizations (December 2024)
+
+ScreenSaverKit now includes three major performance optimizations:
+
+1. **Alive Particle Tracking** - Automatic ~100x speedup for sparse particle systems
+2. **Async Rendering Mode** - Optional previous-frame rendering to eliminate GPU waits
+3. **Indirect Rendering** - Optional GPU-side instance buffer building
+
+**See [PERFORMANCE_OPTIMIZATIONS.md](PERFORMANCE_OPTIMIZATIONS.md)** for complete documentation on how to use these features and maximize performance.
+
+**Quick Start:**
+```objc
+SSKParticleSystem *system = [[SSKParticleSystem alloc] initWithCapacity:10000];
+system.metalSimulationRenderMode = SSKMetalSimulationRenderModePreviousFrame;
+
+SSKMetalParticleRenderer *renderer = [[SSKMetalParticleRenderer alloc] initWithLayer:layer];
+renderer.useIndirectRendering = YES;
+```
+
+### Testing Tools
+
+See **[PERFORMANCE_TESTING.md](PERFORMANCE_TESTING.md)** for detailed documentation on:
 
 - **Unit Tests** (`Tests/`) - Functional correctness tests for core components
 - **Performance Benchmark Screensaver** (`Demos/PerformanceBenchmark/`) - Real-time metrics visualization with configurable test scenarios

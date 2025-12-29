@@ -24,6 +24,12 @@ typedef struct {
 @property (nonatomic, strong) id<MTLBuffer> quadVertexBuffer;
 @property (nonatomic, strong) id<MTLBuffer> instanceBuffer;
 @property (nonatomic) NSUInteger instanceCapacity;
+
+// Indirect rendering resources
+@property (nonatomic, strong) id<MTLComputePipelineState> buildInstancePipeline;
+@property (nonatomic, strong) id<MTLBuffer> indirectArgsBuffer;
+@property (nonatomic, strong) id<MTLBuffer> instanceCounterBuffer;
+@property (nonatomic) BOOL supportsIndirectRendering;
 @end
 
 @implementation SSKMetalParticlePass
@@ -43,7 +49,11 @@ typedef struct {
     }
     self.device = device;
     self.library = library;
-    return [self buildQuadBuffer] && [self buildRenderPipelines];
+    BOOL success = [self buildQuadBuffer] && [self buildRenderPipelines];
+    if (success) {
+        [self setupIndirectRendering];
+    }
+    return success;
 }
 
 - (BOOL)encodeParticles:(NSArray<SSKParticle *> *)particles
@@ -154,6 +164,103 @@ typedef struct {
     return YES;
 }
 
+- (BOOL)encodeParticlesIndirect:(id<MTLBuffer>)particleBuffer
+                       capacity:(NSUInteger)capacity
+                      blendMode:(SSKParticleBlendMode)blendMode
+                   viewportSize:(CGSize)viewportSize
+                  commandBuffer:(id<MTLCommandBuffer>)commandBuffer
+                   renderTarget:(id<MTLTexture>)renderTarget
+                     loadAction:(MTLLoadAction)loadAction
+                     clearColor:(MTLClearColor)clearColor {
+    if (!commandBuffer || !renderTarget || !particleBuffer) {
+        return NO;
+    }
+
+    // Fallback to CPU path if indirect rendering not supported
+    if (!self.supportsIndirectRendering) {
+        return NO;
+    }
+
+    // Ensure instance buffer has enough capacity
+    [self ensureInstanceCapacity:capacity];
+    if (!self.instanceBuffer) {
+        return NO;
+    }
+
+    // Reset the instance counter to 0
+    uint32_t zero = 0;
+    memcpy(self.instanceCounterBuffer.contents, &zero, sizeof(uint32_t));
+
+    // Dispatch compute shader to build instance data
+    id<MTLComputeCommandEncoder> computeEncoder = [commandBuffer computeCommandEncoder];
+    if (!computeEncoder) {
+        return NO;
+    }
+
+    [computeEncoder setComputePipelineState:self.buildInstancePipeline];
+    [computeEncoder setBuffer:particleBuffer offset:0 atIndex:0];
+    [computeEncoder setBuffer:self.instanceBuffer offset:0 atIndex:1];
+    [computeEncoder setBuffer:self.instanceCounterBuffer offset:0 atIndex:2];
+    [computeEncoder setBytes:&capacity length:sizeof(uint32_t) atIndex:3];
+
+    // Dispatch with 256 threads per threadgroup
+    NSUInteger threadGroupSize = 256;
+    NSUInteger threadGroups = (capacity + threadGroupSize - 1) / threadGroupSize;
+
+    [computeEncoder dispatchThreadgroups:MTLSizeMake(threadGroups, 1, 1)
+                   threadsPerThreadgroup:MTLSizeMake(threadGroupSize, 1, 1)];
+    [computeEncoder endEncoding];
+
+    // Copy instance counter to indirect args buffer
+    id<MTLBlitCommandEncoder> blitEncoder = [commandBuffer blitCommandEncoder];
+    if (!blitEncoder) {
+        return NO;
+    }
+
+    // Copy counter (instance count) to indirectArgsBuffer at offset 4 (instanceCount field)
+    [blitEncoder copyFromBuffer:self.instanceCounterBuffer
+                   sourceOffset:0
+                       toBuffer:self.indirectArgsBuffer
+              destinationOffset:4  // Offset of instanceCount in MTLDrawPrimitivesIndirectArguments
+                           size:sizeof(uint32_t)];
+    [blitEncoder endEncoding];
+
+    // Render using indirect draw
+    MTLRenderPassDescriptor *descriptor = [MTLRenderPassDescriptor renderPassDescriptor];
+    descriptor.colorAttachments[0].texture = renderTarget;
+    descriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
+    descriptor.colorAttachments[0].clearColor = clearColor;
+    descriptor.colorAttachments[0].loadAction = loadAction;
+
+    id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:descriptor];
+    if (!encoder) {
+        return NO;
+    }
+
+    id<MTLRenderPipelineState> pipeline = (blendMode == SSKParticleBlendModeAdditive) ? self.additivePipeline : self.alphaPipeline;
+    if (!pipeline) {
+        [encoder endEncoding];
+        return NO;
+    }
+
+    MTLViewport viewport = {0.0, 0.0, (double)renderTarget.width, (double)renderTarget.height, 0.0, 1.0};
+    [encoder setViewport:viewport];
+    [encoder setRenderPipelineState:pipeline];
+    [encoder setVertexBuffer:self.quadVertexBuffer offset:0 atIndex:0];
+    [encoder setVertexBuffer:self.instanceBuffer offset:0 atIndex:1];
+    vector_float2 viewportPoints = {(float)viewportSize.width, (float)viewportSize.height};
+    [encoder setVertexBytes:&viewportPoints length:sizeof(vector_float2) atIndex:2];
+
+    // Indirect draw using the populated args buffer
+    [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip
+             indirectBuffer:self.indirectArgsBuffer
+       indirectBufferOffset:0];
+
+    [encoder endEncoding];
+
+    return YES;
+}
+
 #pragma mark - Private helpers
 
 - (BOOL)buildQuadBuffer {
@@ -227,4 +334,72 @@ typedef struct {
                                                    options:MTLResourceStorageModeShared];
     self.instanceCapacity = newCapacity;
 }
+
+- (void)setupIndirectRendering {
+    // Attempt to create the buildInstanceData compute pipeline
+    NSError *error = nil;
+    id<MTLFunction> buildInstanceFunc = [self.library newFunctionWithName:@"buildInstanceData"];
+    if (!buildInstanceFunc) {
+        if ([SSKDiagnostics isEnabled]) {
+            [SSKDiagnostics log:@"SSKMetalParticlePass: buildInstanceData function not found, indirect rendering disabled."];
+        }
+        self.supportsIndirectRendering = NO;
+        return;
+    }
+
+    self.buildInstancePipeline = [self.device newComputePipelineStateWithFunction:buildInstanceFunc error:&error];
+    if (!self.buildInstancePipeline) {
+        if ([SSKDiagnostics isEnabled]) {
+            [SSKDiagnostics log:@"SSKMetalParticlePass: failed to create compute pipeline: %@", error.localizedDescription];
+        }
+        self.supportsIndirectRendering = NO;
+        return;
+    }
+
+    // Create indirect arguments buffer (MTLDrawPrimitivesIndirectArguments)
+    // Structure: { uint32_t vertexCount, uint32_t instanceCount, uint32_t vertexStart, uint32_t baseInstance }
+    typedef struct {
+        uint32_t vertexCount;
+        uint32_t instanceCount;
+        uint32_t vertexStart;
+        uint32_t baseInstance;
+    } MTLDrawPrimitivesIndirectArguments;
+
+    MTLDrawPrimitivesIndirectArguments indirectArgs = {
+        .vertexCount = 4,      // Triangle strip quad
+        .instanceCount = 0,    // Will be filled by GPU
+        .vertexStart = 0,
+        .baseInstance = 0
+    };
+
+    self.indirectArgsBuffer = [self.device newBufferWithBytes:&indirectArgs
+                                                       length:sizeof(MTLDrawPrimitivesIndirectArguments)
+                                                      options:MTLResourceStorageModeShared];
+    if (!self.indirectArgsBuffer) {
+        if ([SSKDiagnostics isEnabled]) {
+            [SSKDiagnostics log:@"SSKMetalParticlePass: failed to create indirect args buffer."];
+        }
+        self.supportsIndirectRendering = NO;
+        return;
+    }
+
+    // Create instance counter buffer (atomic uint)
+    uint32_t zero = 0;
+    self.instanceCounterBuffer = [self.device newBufferWithBytes:&zero
+                                                          length:sizeof(uint32_t)
+                                                         options:MTLResourceStorageModeShared];
+    if (!self.instanceCounterBuffer) {
+        if ([SSKDiagnostics isEnabled]) {
+            [SSKDiagnostics log:@"SSKMetalParticlePass: failed to create instance counter buffer."];
+        }
+        self.supportsIndirectRendering = NO;
+        return;
+    }
+
+    self.supportsIndirectRendering = YES;
+    if ([SSKDiagnostics isEnabled]) {
+        [SSKDiagnostics log:@"SSKMetalParticlePass: indirect rendering enabled."];
+    }
+}
+
 @end

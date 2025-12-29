@@ -199,8 +199,29 @@ typedef void (^SSKParticleRenderer)(CGContextRef ctx, SSKParticle *particle);
 /// `spawnParticlesGPU:parameters:`. Disable to make large GPU spawns async. Defaults to YES.
 @property (nonatomic) BOOL synchronizesMetalSpawn;
 
+/// Rendering mode for Metal simulation data access.
+typedef NS_ENUM(NSUInteger, SSKMetalSimulationRenderMode) {
+    /// Block until GPU simulation completes before returning from advanceBy: (default behavior).
+    /// Guarantees CPU snapshots see current frame data at the cost of GPU wait time.
+    SSKMetalSimulationRenderModeBlocking,
+    /// Render previous frame's particle data to eliminate GPU wait.
+    /// Adds 1-frame visual latency (imperceptible at 60fps) but allows CPU and GPU to work in parallel.
+    SSKMetalSimulationRenderModePreviousFrame,
+} NS_SWIFT_NAME(MetalSimulationRenderMode);
+
+/// Metal simulation rendering mode. When set to PreviousFrame mode, eliminates GPU-CPU
+/// synchronization wait at the cost of 1-frame visual latency. Defaults to Blocking mode.
+@property (nonatomic) SSKMetalSimulationRenderMode metalSimulationRenderMode;
+
 /// Returns the number of live particles currently managed by the system.
 @property (nonatomic, readonly) NSUInteger aliveParticleCount;
+
+/// Maximum number of particles the system can hold.
+@property (nonatomic, readonly) NSUInteger capacity;
+
+/// Returns the Metal buffer containing particle state data (for indirect rendering).
+/// Available only when Metal simulation is supported.
+@property (nonatomic, readonly, nullable) id<MTLBuffer> particleBuffer;
 
 /// Resets and removes all particles.
 - (void)reset;

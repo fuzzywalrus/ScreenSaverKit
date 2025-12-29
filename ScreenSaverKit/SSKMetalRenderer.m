@@ -175,6 +175,44 @@ NSString * const SSKMetalEffectIdentifierColorGrading = @"com.ssk.effects.colorg
     self.needsClearOnNextPass = NO;
 }
 
+- (void)drawParticlesIndirect:(id<MTLBuffer>)particleBuffer
+                      capacity:(NSUInteger)capacity
+                     blendMode:(SSKParticleBlendMode)blendMode
+                  viewportSize:(CGSize)viewportSize {
+    if (!self.particlePass) { return; }
+    id<MTLCommandBuffer> commandBuffer = self.currentCommandBuffer;
+    id<MTLTexture> target = [self activeRenderTarget];
+    if (!commandBuffer || !target || !particleBuffer) { return; }
+
+    // Try indirect rendering if enabled and supported
+    if (self.useIndirectRendering && self.particlePass.supportsIndirectRendering) {
+        MTLLoadAction loadAction = self.needsClearOnNextPass ? MTLLoadActionClear : MTLLoadActionLoad;
+        BOOL success = [self.particlePass encodeParticlesIndirect:particleBuffer
+                                                          capacity:capacity
+                                                         blendMode:blendMode
+                                                      viewportSize:viewportSize
+                                                     commandBuffer:commandBuffer
+                                                      renderTarget:target
+                                                        loadAction:loadAction
+                                                        clearColor:self.clearColor];
+        if (success) {
+            self.needsClearOnNextPass = NO;
+            return;
+        }
+
+        // Log failure and fall through to CPU path
+        if ([SSKDiagnostics isEnabled]) {
+            [SSKDiagnostics log:@"SSKMetalRenderer: indirect particle pass failed, falling back to CPU path."];
+        }
+    }
+
+    // Fallback: not implemented - indirect rendering requires particle snapshot
+    // Caller should use drawParticles:blendMode:viewportSize: instead
+    if ([SSKDiagnostics isEnabled]) {
+        [SSKDiagnostics log:@"SSKMetalRenderer: drawParticlesIndirect called but indirect rendering not available or failed."];
+    }
+}
+
 - (void)drawTexture:(id<MTLTexture>)texture atRect:(CGRect)rect {
     (void)texture;
     (void)rect;

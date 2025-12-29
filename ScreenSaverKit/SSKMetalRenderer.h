@@ -39,6 +39,13 @@ FOUNDATION_EXPORT NSString * const SSKMetalEffectIdentifierColorGrading;
             blendMode:(SSKParticleBlendMode)blendMode
          viewportSize:(CGSize)viewportSize;
 
+/// Renders particles using GPU-accelerated indirect rendering from a particle buffer.
+/// Falls back to CPU path if indirect rendering is not supported.
+- (void)drawParticlesIndirect:(id<MTLBuffer>)particleBuffer
+                      capacity:(NSUInteger)capacity
+                     blendMode:(SSKParticleBlendMode)blendMode
+                  viewportSize:(CGSize)viewportSize;
+
 /// Draws a texture into the current render target.
 - (void)drawTexture:(id<MTLTexture>)texture atRect:(CGRect)rect;
 
@@ -101,6 +108,11 @@ FOUNDATION_EXPORT NSString * const SSKMetalEffectIdentifierColorGrading;
 
 /// Particle pass used for rendering particles. Exposed for configuration.
 @property (nonatomic, strong, readonly) SSKMetalParticlePass *particlePass;
+
+/// Enable GPU-accelerated indirect rendering for particle systems.
+/// When enabled, instance buffer building happens on GPU instead of CPU.
+/// Requires Metal device with indirect command support. Defaults to NO.
+@property (nonatomic) BOOL useIndirectRendering;
 
 @end
 

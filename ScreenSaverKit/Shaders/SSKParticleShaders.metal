@@ -338,3 +338,64 @@ kernel void bloomCompositeKernel(texture2d<float, access::sample> bloomTex [[tex
     }
     destination.write(dest, gid);
 }
+
+// --- GPU-side instance buffer building for indirect rendering ---
+
+kernel void buildInstanceData(device ParticleState *particles [[buffer(0)]],
+                              device InstanceData *instances [[buffer(1)]],
+                              device atomic_uint *counter [[buffer(2)]],
+                              constant uint &capacity [[buffer(3)]],
+                              uint id [[thread_position_in_grid]]) {
+    if (id >= capacity) { return; }
+
+    ParticleState state = particles[id];
+    if (state.alive == 0u) { return; }
+
+    // Allocate instance slot atomically
+    uint instanceIndex = atomic_fetch_add_explicit(counter, 1u, memory_order_relaxed);
+
+    // Build instance data (same logic as CPU side in SSKMetalParticlePass)
+    InstanceData data;
+    data.position = state.position;
+
+    // Direction from normalized velocity
+    float2 dir = state.userVector;
+    float len = length(dir);
+    if (len < 0.0001f) {
+        dir = float2(1.0f, 0.0f);
+    } else {
+        dir /= len;
+    }
+    data.direction = dir;
+
+    // Size
+    float width = max(1.0f, state.size);
+    data.width = width;
+
+    // Length calculation - three modes based on userScalar
+    float userScalar = state.userScalar;
+    if (userScalar > 10.0f) {
+        // Mode 1: Direct multiplier (no z-depth)
+        float lengthMultiplier = userScalar - 10.0f;
+        data.length = width * lengthMultiplier;
+    } else if (userScalar >= 0.1f && userScalar <= 1.0f) {
+        // Mode 2: Z-depth factor (for rain with perspective)
+        float zDepth = userScalar;
+        float lengthMultiplier = 8.0f; // Default length multiplier
+        data.length = width * lengthMultiplier * zDepth;
+    } else {
+        // Mode 3: Default
+        data.length = width * 8.0f;
+    }
+
+    data.color = state.color;
+
+    // Softness (edge blur) - only for non-z-depth particles
+    float softness = (userScalar > 10.0f || userScalar < 0.1f) ? userScalar : 0.0f;
+    if (!isfinite(softness) || softness < 0.0f) {
+        softness = 0.0f;
+    }
+    data.softness = softness;
+
+    instances[instanceIndex] = data;
+}

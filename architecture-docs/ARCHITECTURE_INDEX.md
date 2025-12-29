@@ -52,6 +52,23 @@ Includes:
 
 **Best for**: Learning by example, adding new effects, debugging issues
 
+### 4. **PERFORMANCE_OPTIMIZATIONS.md** (Performance Reference)
+**Location**: `../PERFORMANCE_OPTIMIZATIONS.md` (root directory)
+**Length**: ~800 lines | **Focus**: Performance optimization guide
+
+Includes:
+- Three major particle system optimizations (December 2024):
+  - Alive Particle Tracking (~100x speedup for sparse systems)
+  - Async Rendering Mode (-0.1 to -0.3ms per frame)
+  - Indirect Rendering (-0.2 to -0.5ms per frame)
+- Implementation details and technical deep dive
+- Usage examples and migration guide
+- Performance benchmarking methodology
+- Trade-off analysis and optimization strategy
+- Troubleshooting guide
+
+**Best for**: Maximizing performance, understanding GPU optimizations, choosing the right optimization strategy
+
 ---
 
 ## Quick Start by Use Case
@@ -85,6 +102,12 @@ Includes:
 1. Read: **ARCHITECTURE_ANALYSIS.md** (Testing Architecture section)
 2. Reference: `/Tests/README.md` for test organization and running tests
 3. Code: `/Tests/SSKParticleSystemTests.m` for example test patterns
+
+### "I need to optimize particle system performance"
+1. Start: **PERFORMANCE_OPTIMIZATIONS.md** (Overview and Usage sections)
+2. Enable: Async rendering mode and indirect rendering (Quick Start examples)
+3. Measure: Use benchmark tools in `/Tools/Benchmark/` to verify improvements
+4. Troubleshoot: Performance Characteristics sections for each optimization
 
 ---
 

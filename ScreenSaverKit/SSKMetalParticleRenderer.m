@@ -77,6 +77,13 @@ static void SSKMetalParticleRendererSetLastErrorMessage(NSString *message) {
     self.renderer.bloomBlurSigma = _bloomBlurSigma;
 }
 
+- (void)setUseIndirectRendering:(BOOL)useIndirectRendering {
+    if (_useIndirectRendering != useIndirectRendering) {
+        _useIndirectRendering = useIndirectRendering;
+        self.renderer.useIndirectRendering = useIndirectRendering;
+    }
+}
+
 - (BOOL)renderParticles:(NSArray<SSKParticle *> *)particles
               blendMode:(SSKParticleBlendMode)blendMode
            viewportSize:(CGSize)viewportSize {

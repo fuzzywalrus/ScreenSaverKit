@@ -5,6 +5,7 @@
 #import <math.h>
 
 #import "SSKMetalParticleRenderer.h"
+#import "SSKMetalRenderer.h"
 #import "SSKVectorMath.h"
 
 // Behaviour flag values mirrored in the Metal shader.
@@ -309,6 +310,11 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
 @property (nonatomic, strong) NSMutableIndexSet *availableIndices; // Kept for compatibility, but optimized access
 @property (nonatomic, strong) NSMutableArray<NSNumber *> *freeIndicesStack; // Fast O(1) allocation
 @property (nonatomic, strong) dispatch_queue_t particleIndexQueue; // Serial queue for free list updates
+@property (nonatomic, strong) NSMutableArray<NSNumber *> *aliveIndicesArray; // Sparse array of alive particle indices
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSNumber *> *indexToAlivePosition; // Maps particle index to position in aliveIndicesArray
+@property (nonatomic, strong) id<MTLBuffer> previousFrameBuffer; // Buffer storing previous frame's particle data for async rendering
+@property (nonatomic) BOOL hasPreviousFrame; // Whether we have valid previous frame data
+@property (nonatomic, strong) dispatch_semaphore_t frameFence; // Semaphore ensuring only 1 frame in flight for async mode
 @property (nonatomic, strong) id<MTLDevice> metalDevice;
 @property (nonatomic, strong) id<MTLCommandQueue> commandQueue;
 @property (nonatomic, strong) id<MTLComputePipelineState> computePipeline;
@@ -337,6 +343,9 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
             [_freeIndicesStack addObject:@(i)];
         }
         _particleIndexQueue = dispatch_queue_create("com.ssk.particleIndex", DISPATCH_QUEUE_SERIAL);
+        // Alive particle tracking optimization
+        _aliveIndicesArray = [NSMutableArray arrayWithCapacity:MIN(capacity, (NSUInteger)1024)];
+        _indexToAlivePosition = [NSMutableDictionary dictionaryWithCapacity:MIN(capacity, (NSUInteger)1024)];
         _blendMode = SSKParticleBlendModeAlpha;
         _gravity = NSZeroPoint;
         _globalDamping = 0.0;
@@ -500,6 +509,13 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         return;
     }
 
+    // Create previous frame buffer for async rendering mode
+    id<MTLBuffer> previousFrameBuffer = [device newBufferWithLength:capacity * sizeof(SSKParticleState)
+                                                            options:MTLResourceStorageModeShared];
+    if (!previousFrameBuffer) {
+        NSLog(@"SSKParticleSystem: failed to create previous frame buffer; async rendering unavailable.");
+    }
+
     self.metalDevice = device;
     self.commandQueue = queue;
     self.computePipeline = pipeline;
@@ -507,6 +523,10 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     self.shaderLibrary = library;
     self.particleBuffer = particleBuffer;
     self.uniformsBuffer = uniformsBuffer;
+    self.previousFrameBuffer = previousFrameBuffer;
+    self.frameFence = dispatch_semaphore_create(1);
+    self.hasPreviousFrame = NO;
+    self.metalSimulationRenderMode = SSKMetalSimulationRenderModeBlocking;
     self.states = particleBuffer.contents;
     self.supportsMetalSimulation = YES;
 }
@@ -603,11 +623,15 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         
         // Phase 1.2: Only use property setters for user-provided initializer
         initializer(particle);
-        
+
         // Ensure baseSize is set if not already
         if (state->baseSize <= 0.0f) {
             state->baseSize = state->size;
         }
+
+        // Add to alive tracking
+        [self.aliveIndicesArray addObject:@(idx)];
+        [self.indexToAlivePosition setObject:@(self.aliveIndicesArray.count - 1) forKey:@(idx)];
     }
     
     // Phase 1.3: Batched dirty marking - single call for all modified particles
@@ -769,7 +793,11 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         NSUInteger idx = indices[i];
         SSKParticle *particle = self.particles[idx];
         particle.state = &self.states[idx];
-        
+
+        // Add to alive tracking
+        [self.aliveIndicesArray addObject:@(idx)];
+        [self.indexToAlivePosition setObject:@(self.aliveIndicesArray.count - 1) forKey:@(idx)];
+
         if (minIndex == NSNotFound || idx < minIndex) {
             minIndex = idx;
         }
@@ -826,6 +854,8 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         state->life += (float)dt;
         if (state->life >= state->maxLife) {
             state->alive = 0u;
+            // Remove from alive tracking
+            [self removeFromAliveTracking:idx];
             // Phase 3: O(1) deallocation to stack
             [self.freeIndicesStack addObject:@(idx)];
             [self.availableIndices addIndex:idx];
@@ -853,6 +883,8 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
 
         if (SSKShouldCullParticle(self, state->position)) {
             state->alive = 0u;
+            // Remove from alive tracking
+            [self removeFromAliveTracking:idx];
             [self.freeIndicesStack addObject:@(idx)];
             [self.availableIndices addIndex:idx];
             continue;
@@ -869,6 +901,20 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     if (!self.computePipeline || !self.commandQueue || !self.particleBuffer || !self.uniformsBuffer) {
         [self advanceOnCPU:dt];
         return;
+    }
+
+    // Wait for previous frame's GPU work to complete (async mode only)
+    if (self.metalSimulationRenderMode == SSKMetalSimulationRenderModePreviousFrame && self.frameFence) {
+        dispatch_semaphore_wait(self.frameFence, DISPATCH_TIME_FOREVER);
+    }
+
+    // Copy current state to previous frame buffer (before simulation)
+    if (self.metalSimulationRenderMode == SSKMetalSimulationRenderModePreviousFrame &&
+        self.previousFrameBuffer && self.particleBuffer) {
+        memcpy(self.previousFrameBuffer.contents,
+               self.particleBuffer.contents,
+               self.capacity * sizeof(SSKParticleState));
+        self.hasPreviousFrame = YES;
     }
 
     SSKParticleSimulationUniforms *uniforms = self.uniformsBuffer.contents;
@@ -911,19 +957,29 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
                     state->alive = 0u;
                 }
                 if (!state->alive && ![strongSelf.availableIndices containsIndex:idx]) {
+                    // Remove from alive tracking
+                    [strongSelf removeFromAliveTracking:idx];
                     // Phase 3: O(1) deallocation to stack - only add newly dead particles
                     [strongSelf.freeIndicesStack addObject:@(idx)];
                     [strongSelf.availableIndices addIndex:idx];
                 }
             }
+
+            // Signal frame fence for async mode
+            if (strongSelf.metalSimulationRenderMode == SSKMetalSimulationRenderModePreviousFrame &&
+                strongSelf.frameFence) {
+                dispatch_semaphore_signal(strongSelf.frameFence);
+            }
         });
     }];
 
     [commandBuffer commit];
-    if (self.synchronizesMetalSimulation) {
+    if (self.synchronizesMetalSimulation ||
+        self.metalSimulationRenderMode == SSKMetalSimulationRenderModeBlocking) {
         // Ensure CPU snapshots observe the freshly simulated data this frame.
         [commandBuffer waitUntilCompleted];
     }
+    // In PreviousFrame mode, don't wait - let GPU run async
 }
 
 - (void)applyAutomaticBehavioursToState:(SSKParticleState *)state delta:(NSTimeInterval)dt {
@@ -1023,6 +1079,9 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     }
     [self.availableIndices removeAllIndexes];
     [self.availableIndices addIndexesInRange:NSMakeRange(0, self.capacity)];
+    // Reset alive tracking
+    [self.aliveIndicesArray removeAllObjects];
+    [self.indexToAlivePosition removeAllObjects];
     [self markAllStatesDirty];
 }
 
@@ -1035,11 +1094,28 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     if (alive.count > 0) {
         [alive removeAllObjects];
     }
-    for (SSKParticle *particle in self.particles) {
-        if (particle.isAlive) {
+
+    // Determine which buffer to read from based on rendering mode
+    SSKParticleState *sourceStates = self.states;
+    if (self.metalSimulationRenderMode == SSKMetalSimulationRenderModePreviousFrame &&
+        self.hasPreviousFrame &&
+        self.previousFrameBuffer) {
+        sourceStates = (SSKParticleState *)self.previousFrameBuffer.contents;
+    }
+
+    // Optimized: iterate only alive indices instead of all capacity
+    for (NSNumber *indexNum in self.aliveIndicesArray) {
+        NSUInteger idx = [indexNum unsignedIntegerValue];
+        if (sourceStates == self.states) {
+            // Using current frame data - use existing particle wrappers
+            [alive addObject:self.particles[idx]];
+        } else {
+            // Using previous frame data - create temporary particle wrapper
+            SSKParticle *particle = [[SSKParticle alloc] initWithState:&sourceStates[idx] index:idx];
             [alive addObject:particle];
         }
     }
+
     return alive;
 }
 
@@ -1048,6 +1124,29 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
                     viewportSize:(CGSize)viewportSize {
     if (!renderer) { return NO; }
 
+    // Try indirect rendering path if available
+    if (renderer.useIndirectRendering && self.particleBuffer) {
+        SSKMetalRenderer *metalRenderer = [renderer valueForKey:@"renderer"];
+        if (metalRenderer && [metalRenderer beginFrame]) {
+            [metalRenderer drawParticlesIndirect:self.particleBuffer
+                                        capacity:self.capacity
+                                       blendMode:blendMode
+                                    viewportSize:viewportSize];
+
+            // Apply post-processing effects
+            if (renderer.blurRadius > 0.01) {
+                [metalRenderer applyBlur:renderer.blurRadius];
+            }
+            if (renderer.bloomIntensity > 0.01) {
+                [metalRenderer applyBloom:renderer.bloomIntensity];
+            }
+
+            [metalRenderer endFrame];
+            return YES;
+        }
+    }
+
+    // Fallback to CPU path using snapshot
     NSArray<SSKParticle *> *snapshot = [self aliveParticlesSnapshot];
     return [renderer renderParticles:snapshot blendMode:blendMode viewportSize:viewportSize];
 }
@@ -1071,6 +1170,25 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     length = MIN(length, self.particleBuffer.length);
     if (length == 0) { return; }
     [self.particleBuffer didModifyRange:NSMakeRange(0, length)];
+}
+
+- (void)removeFromAliveTracking:(NSUInteger)index {
+    NSNumber *indexNum = @(index);
+    NSNumber *positionNum = [self.indexToAlivePosition objectForKey:indexNum];
+    if (!positionNum) { return; }
+
+    NSUInteger position = [positionNum unsignedIntegerValue];
+    NSUInteger lastPos = self.aliveIndicesArray.count - 1;
+
+    if (position != lastPos) {
+        // Swap with last element for O(1) removal
+        NSNumber *lastIndex = self.aliveIndicesArray[lastPos];
+        self.aliveIndicesArray[position] = lastIndex;
+        self.indexToAlivePosition[lastIndex] = @(position);
+    }
+
+    [self.aliveIndicesArray removeLastObject];
+    [self.indexToAlivePosition removeObjectForKey:indexNum];
 }
 
 @end

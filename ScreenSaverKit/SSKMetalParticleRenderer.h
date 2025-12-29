@@ -39,6 +39,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// Sigma used by the bloom blur (controls spread). Defaults to 3.0.
 @property (nonatomic) CGFloat bloomBlurSigma;
 
+/// Enable GPU-accelerated indirect rendering. When enabled, instance buffer
+/// building happens on GPU instead of CPU. Defaults to NO.
+@property (nonatomic) BOOL useIndirectRendering;
+
 @end
 
 NS_ASSUME_NONNULL_END
