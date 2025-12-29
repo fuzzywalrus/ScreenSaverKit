@@ -22,6 +22,8 @@
         _threshold = 0.8;
         _intensity = 1.0;
         _blurSigma = 3.0;
+        _useHalfResolution = YES; // Default to half-res for better performance
+        _minimumIntensity = 0.01; // Skip bloom if intensity is too low
     }
     return self;
 }
@@ -102,6 +104,11 @@
         !self.thresholdPipeline || !self.compositePipeline) {
         return NO;
     }
+    
+    // Performance optimization: skip bloom if intensity is too low
+    if (self.intensity < self.minimumIntensity) {
+        return YES; // Successfully skipped (no-op)
+    }
 
     SSKMetalBlurPass *blurPass = [self resolvedBlurPass];
     if (!blurPass) {
@@ -111,9 +118,18 @@
         return NO;
     }
 
+    // Performance optimization: use half-resolution for threshold and blur passes
+    // This reduces texture work by 4x (half width × half height = 1/4 pixels)
+    NSUInteger bloomWidth = self.useHalfResolution ? (source.width + 1) / 2 : source.width;
+    NSUInteger bloomHeight = self.useHalfResolution ? (source.height + 1) / 2 : source.height;
+    
     MTLTextureUsage usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
-    id<MTLTexture> brightTexture = [textureCache acquireTextureMatchingTexture:source usage:usage];
-    id<MTLTexture> blurredTexture = [textureCache acquireTextureMatchingTexture:source usage:usage];
+    id<MTLTexture> brightTexture = [textureCache acquireTextureWithSize:CGSizeMake(bloomWidth, bloomHeight)
+                                                             pixelFormat:source.pixelFormat
+                                                                   usage:usage];
+    id<MTLTexture> blurredTexture = [textureCache acquireTextureWithSize:CGSizeMake(bloomWidth, bloomHeight)
+                                                               pixelFormat:source.pixelFormat
+                                                                     usage:usage];
     if (!brightTexture || !blurredTexture) {
         if (brightTexture) { [textureCache releaseTexture:brightTexture]; }
         if (blurredTexture) { [textureCache releaseTexture:blurredTexture]; }
@@ -155,6 +171,7 @@
     }
 
     // Composite pass (blurred -> renderTarget)
+    // Composite always runs at full resolution, but samples from half-res blurred texture
     encoder = [commandBuffer computeCommandEncoder];
     if (!encoder) {
         [textureCache releaseTexture:blurredTexture];

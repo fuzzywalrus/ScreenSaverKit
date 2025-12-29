@@ -395,12 +395,56 @@ NSString * const SSKMetalEffectIdentifierColorGrading = @"com.ssk.effects.colorg
             return library;
         }
         if ([SSKDiagnostics isEnabled]) {
-            [SSKDiagnostics log:@"SSKMetalRenderer: failed to load metallib at %@ (%@).", metallibPath, error.localizedDescription ?: @"unknown error"];
-        }
+        [SSKDiagnostics log:@"SSKMetalRenderer: failed to load metallib at %@ (%@).", metallibPath, error.localizedDescription ?: @"unknown error"];
+    }
     } else if ([SSKDiagnostics isEnabled]) {
         [SSKDiagnostics log:@"SSKMetalRenderer: SSKParticleShaders.metallib missing from bundle resources."];
     }
-    return nil;
+    
+    // Fallback: compile from source when the prebuilt metallib is unavailable (e.g. in unit tests).
+    NSString *metalSourcePath = [bundle pathForResource:@"SSKParticleShaders" ofType:@"metal"];
+    if (!metalSourcePath) {
+        // Attempt to locate the source relative to the bundle path by walking upwards.
+        NSString *probe = bundle.bundlePath;
+        for (NSUInteger i = 0; i < 5 && probe.length > 1; i++) {
+            NSString *candidate = [probe stringByAppendingPathComponent:@"ScreenSaverKit/Shaders/SSKParticleShaders.metal"];
+            if ([[NSFileManager defaultManager] fileExistsAtPath:candidate]) {
+                metalSourcePath = candidate;
+                break;
+            }
+            probe = [probe stringByDeletingLastPathComponent];
+        }
+        // Try current working directory as a last resort (unit tests).
+        if (!metalSourcePath) {
+            NSString *cwd = [[NSFileManager defaultManager] currentDirectoryPath];
+            NSString *candidate = [cwd stringByAppendingPathComponent:@"ScreenSaverKit/Shaders/SSKParticleShaders.metal"];
+            if ([[NSFileManager defaultManager] fileExistsAtPath:candidate]) {
+                metalSourcePath = candidate;
+            }
+        }
+    }
+    
+    if (metalSourcePath.length == 0) {
+        if ([SSKDiagnostics isEnabled]) {
+            [SSKDiagnostics log:@"SSKMetalRenderer: Metal source not found; cannot compile fallback library."];
+        }
+        return nil;
+    }
+    
+    NSError *readError = nil;
+    NSString *source = [NSString stringWithContentsOfFile:metalSourcePath encoding:NSUTF8StringEncoding error:&readError];
+    if (!source) {
+        if ([SSKDiagnostics isEnabled]) {
+            [SSKDiagnostics log:@"SSKMetalRenderer: failed to read Metal source at %@ (%@).", metalSourcePath, readError.localizedDescription ?: @"unknown error"];
+        }
+        return nil;
+    }
+    error = nil;
+    id<MTLLibrary> library = [device newLibraryWithSource:source options:nil error:&error];
+    if (!library && [SSKDiagnostics isEnabled]) {
+        [SSKDiagnostics log:@"SSKMetalRenderer: failed to compile Metal source at %@ (%@).", metalSourcePath, error.localizedDescription ?: @"unknown error"];
+    }
+    return library;
 }
 
 - (id<MTLTexture>)activeRenderTarget {

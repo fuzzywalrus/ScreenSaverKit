@@ -293,8 +293,12 @@ kernel void bloomCompositeKernel(texture2d<float, access::sample> bloomTex [[tex
     if (gid.x >= destination.get_width() || gid.y >= destination.get_height()) {
         return;
     }
-    constexpr sampler s(address::clamp_to_edge, filter::nearest);
-    float4 bloom = bloomTex.sample(s, (float2(gid) + 0.5f) / float2(bloomTex.get_width(), bloomTex.get_height()));
+    // Use linear filtering for better quality when upscaling from half-resolution bloom
+    constexpr sampler s(address::clamp_to_edge, filter::linear);
+    // Calculate UV coordinates in destination space, then map to bloom texture space
+    // This handles both full-res and half-res bloom textures correctly
+    float2 destUV = (float2(gid) + 0.5f) / float2(destination.get_width(), destination.get_height());
+    float4 bloom = bloomTex.sample(s, destUV);
     float4 dest = destination.read(gid);
     float glow = bloom.a * intensity;
     if (glow > 0.0001f) {

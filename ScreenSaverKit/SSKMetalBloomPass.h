@@ -11,6 +11,11 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) CGFloat threshold;
 @property (nonatomic) CGFloat intensity;
 @property (nonatomic) CGFloat blurSigma;
+/// When YES, bloom threshold and blur passes run at half resolution (4x fewer pixels).
+/// Composite still runs at full resolution. Defaults to YES for better performance.
+@property (nonatomic) BOOL useHalfResolution;
+/// Minimum intensity threshold below which bloom is skipped entirely. Defaults to 0.01.
+@property (nonatomic) CGFloat minimumIntensity;
 
 - (BOOL)setupWithDevice:(id<MTLDevice>)device
                 library:(id<MTLLibrary>)library;

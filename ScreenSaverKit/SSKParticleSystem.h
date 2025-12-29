@@ -170,6 +170,15 @@ typedef void (^SSKParticleRenderer)(CGContextRef ctx, SSKParticle *particle);
 /// Defaults to YES when a Metal device and compute pipeline can be created.
 @property (nonatomic, getter=isMetalSimulationEnabled) BOOL metalSimulationEnabled;
 
+/// When enabled, waits for the Metal simulation command buffer to complete before returning
+/// from `advanceBy:`. This guarantees CPU snapshots see up-to-date data at the cost of a
+/// sync point each frame. Defaults to YES.
+@property (nonatomic) BOOL synchronizesMetalSimulation;
+
+/// When enabled, waits for the GPU spawn command buffer to complete before returning from
+/// `spawnParticlesGPU:parameters:`. Disable to make large GPU spawns async. Defaults to YES.
+@property (nonatomic) BOOL synchronizesMetalSpawn;
+
 /// Returns the number of live particles currently managed by the system.
 @property (nonatomic, readonly) NSUInteger aliveParticleCount;
 

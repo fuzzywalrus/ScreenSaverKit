@@ -5,6 +5,7 @@
 
 #import "SSKDiagnostics.h"
 #import "SSKMetalRenderer.h"
+#import "SSKMetalTextureCache.h"
 
 @interface SSKMetalScreenSaverView ()
 @property (nonatomic, strong, readwrite, nullable) SSKMetalRenderer *metalRenderer;
@@ -54,6 +55,17 @@
             self.layer = [CALayer layer];
         }
     }
+}
+
+- (void)stopAnimation {
+    if (self.metalRenderer) {
+        [self.metalRenderer endFrame];
+        [self.metalRenderer.textureCache clearCache];
+        self.metalRenderer = nil;
+        self.metalLayer = nil;
+        self.metalAvailable = NO;
+    }
+    [super stopAnimation];
 }
 
 - (void)animateOneFrame {

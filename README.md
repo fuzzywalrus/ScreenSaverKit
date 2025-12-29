@@ -175,6 +175,16 @@ self.renderDiagnostics.overlayEnabled = YES; // Show overlay (default)
 
 See `Demos/MetalParticleTest/` for a complete diagnostic implementation example, or `Demos/MetalDiagnostic/` for a low-level Metal sanity checker that tests device, layer, and drawable initialization.
 
+## Testing and Performance
+
+ScreenSaverKit includes comprehensive testing and performance evaluation tools. See **[PERFORMANCE_TESTING.md](PERFORMANCE_TESTING.md)** for detailed documentation on:
+
+- **Unit Tests** (`Tests/`) - Functional correctness tests for core components
+- **Performance Benchmark Screensaver** (`Demos/PerformanceBenchmark/`) - Real-time metrics visualization with configurable test scenarios
+- **Standalone Benchmark Tool** (`Tools/Benchmark/`) - Automated performance regression testing with JSON/CSV output
+
+The performance testing suite helps verify functionality, measure frame rates, identify bottlenecks, and track performance regressions across different hardware configurations.
+
 ## Starter template
 
 ![DVD Logo Demo](documentation-src/dvd-logo.gif)

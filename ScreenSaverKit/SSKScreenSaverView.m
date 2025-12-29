@@ -105,6 +105,11 @@ static const NSTimeInterval kSSKPreferencePollInterval = 2.0;
     [self ssk_stopPreferenceMonitoring];
     [self.animationClock pause];
     [super stopAnimation];
+    
+    // Clear owned pools and release cached assets when idle.
+    [self.ssk_ownedPools makeObjectsPerformSelector:@selector(drain)];
+    [self.ssk_ownedPools removeAllObjects];
+    [self.ssk_assetManager clearCache];
 }
 
 - (void)ssk_registerDefaultsIfNeeded {

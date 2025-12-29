@@ -300,6 +300,7 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
 @property (nonatomic, strong) NSMutableArray<SSKParticle *> *aliveScratch;
 @property (nonatomic, strong) NSMutableIndexSet *availableIndices; // Kept for compatibility, but optimized access
 @property (nonatomic, strong) NSMutableArray<NSNumber *> *freeIndicesStack; // Fast O(1) allocation
+@property (nonatomic, strong) dispatch_queue_t particleIndexQueue; // Serial queue for free list updates
 @property (nonatomic, strong) id<MTLDevice> metalDevice;
 @property (nonatomic, strong) id<MTLCommandQueue> commandQueue;
 @property (nonatomic, strong) id<MTLComputePipelineState> computePipeline;
@@ -327,9 +328,12 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         for (NSUInteger i = 0; i < capacity; i++) {
             [_freeIndicesStack addObject:@(i)];
         }
+        _particleIndexQueue = dispatch_queue_create("com.ssk.particleIndex", DISPATCH_QUEUE_SERIAL);
         _blendMode = SSKParticleBlendModeAlpha;
         _gravity = NSZeroPoint;
         _globalDamping = 0.0;
+        _synchronizesMetalSimulation = YES;
+        _synchronizesMetalSpawn = YES;
 
         [self setUpMetalResourcesWithCapacity:capacity];
         if (!_states) {
@@ -364,10 +368,16 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
 
 - (void)setUpMetalResourcesWithCapacity:(NSUInteger)capacity {
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-    if (!device) { return; }
+    if (!device) {
+        NSLog(@"SSKParticleSystem: no Metal device available; using CPU path.");
+        return;
+    }
 
     id<MTLCommandQueue> queue = [device newCommandQueue];
-    if (!queue) { return; }
+    if (!queue) {
+        NSLog(@"SSKParticleSystem: failed to create Metal command queue; using CPU path.");
+        return;
+    }
 
     NSError *error = nil;
     
@@ -393,7 +403,24 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     }
 
     id<MTLFunction> kernel = [library newFunctionWithName:@"simulateParticles"];
-    if (!kernel) { return; }
+    if (!kernel) {
+        // Some metallib builds may omit the compute kernel; fallback to the built-in template.
+        NSString *source = [NSString stringWithFormat:kSSKParticleComputeTemplate,
+                            kSSKParticleBehaviorFadeAlpha,
+                            kSSKParticleBehaviorFadeSize];
+        NSError *compileError = nil;
+        id<MTLLibrary> fallbackLibrary = [device newLibraryWithSource:source options:nil error:&compileError];
+        if (!fallbackLibrary) {
+            NSLog(@"SSKParticleSystem: simulateParticles kernel missing and fallback compile failed: %@", compileError);
+            return;
+        }
+        library = fallbackLibrary;
+        kernel = [library newFunctionWithName:@"simulateParticles"];
+        if (!kernel) {
+            NSLog(@"SSKParticleSystem: simulateParticles kernel missing after fallback compile; using CPU path.");
+            return;
+        }
+    }
 
     id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:kernel error:&error];
     if (!pipeline) {
@@ -413,11 +440,17 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
 
     id<MTLBuffer> particleBuffer = [device newBufferWithLength:capacity * sizeof(SSKParticleState)
                                                        options:MTLResourceStorageModeShared];
-    if (!particleBuffer) { return; }
+    if (!particleBuffer) {
+        NSLog(@"SSKParticleSystem: failed to create particle buffer; using CPU path.");
+        return;
+    }
 
     id<MTLBuffer> uniformsBuffer = [device newBufferWithLength:sizeof(SSKParticleSimulationUniforms)
                                                        options:MTLResourceStorageModeShared];
-    if (!uniformsBuffer) { return; }
+    if (!uniformsBuffer) {
+        NSLog(@"SSKParticleSystem: failed to create uniforms buffer; using CPU path.");
+        return;
+    }
 
     self.metalDevice = device;
     self.commandQueue = queue;
@@ -442,6 +475,10 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
 }
 
 - (void)setMetalSimulationEnabled:(BOOL)metalSimulationEnabled {
+    if (metalSimulationEnabled && !self.supportsMetalSimulation && !self.updateHandlerForcesCPU) {
+        // Retry Metal setup in case initial init failed (e.g. missing metallib in test bundles).
+        [self setUpMetalResourcesWithCapacity:self.capacity];
+    }
     if (!self.supportsMetalSimulation || self.updateHandlerForcesCPU) {
         _metalSimulationEnabled = NO;
         return;
@@ -652,19 +689,15 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     [encoder setBuffer:indicesBuffer offset:0 atIndex:2];
     [encoder setBuffer:countBuffer offset:0 atIndex:3];
     
-    NSUInteger threadGroupSize = MIN(self.initializePipeline.maxTotalThreadsPerThreadgroup, 256);
-    if (threadGroupSize == 0) {
-        threadGroupSize = 1;
-    }
+    NSUInteger threadWidth = MAX(self.initializePipeline.threadExecutionWidth, (NSUInteger)1);
+    NSUInteger maxThreads = MAX(self.initializePipeline.maxTotalThreadsPerThreadgroup, (NSUInteger)1);
+    NSUInteger threadGroupSize = MIN(maxThreads, threadWidth * 8); // heuristic multiple of SIMD width
+    threadGroupSize = MAX(threadGroupSize, (NSUInteger)1);
     NSUInteger threadGroups = (actualCount + threadGroupSize - 1) / threadGroupSize;
     MTLSize threadsPerGroup = MTLSizeMake(threadGroupSize, 1, 1);
     MTLSize threadgroupCount = MTLSizeMake(threadGroups, 1, 1);
     [encoder dispatchThreadgroups:threadgroupCount threadsPerThreadgroup:threadsPerGroup];
     [encoder endEncoding];
-    
-    // Wait for completion (synchronous for now - could be made async if needed)
-    [commandBuffer commit];
-    [commandBuffer waitUntilCompleted];
     
     // Update particle wrapper state pointers and mark dirty
     NSUInteger minIndex = NSNotFound;
@@ -683,17 +716,27 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     }
     
     // Batched dirty marking
-    if (minIndex != NSNotFound && self.particleBuffer) {
+    __block BOOL hasRange = (minIndex != NSNotFound && self.particleBuffer);
+    __block NSUInteger startOffset = 0;
+    __block NSUInteger rangeLength = 0;
+    if (hasRange) {
         NSUInteger stride = self.stateStride;
-        NSUInteger startOffset = minIndex * stride;
+        startOffset = minIndex * stride;
         NSUInteger endOffset = (maxIndex + 1) * stride;
-        NSUInteger rangeLength = endOffset - startOffset;
-        
-        if (startOffset + rangeLength <= self.particleBuffer.length) {
-            [self.particleBuffer didModifyRange:NSMakeRange(startOffset, rangeLength)];
-        } else {
-            [self markAllStatesDirty];
+        rangeLength = endOffset - startOffset;
+        if (startOffset + rangeLength > self.particleBuffer.length) {
+            hasRange = NO;
         }
+    }
+
+    [commandBuffer addCompletedHandler:^(__unused id<MTLCommandBuffer> buffer) {
+        if (!hasRange || !self.particleBuffer) { return; }
+        [self.particleBuffer didModifyRange:NSMakeRange(startOffset, rangeLength)];
+    }];
+
+    [commandBuffer commit];
+    if (self.synchronizesMetalSpawn) {
+        [commandBuffer waitUntilCompleted];
     }
     
     free(indices);
@@ -771,10 +814,10 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     [encoder setBuffer:self.uniformsBuffer offset:0 atIndex:1];
 
     NSUInteger threadCount = self.capacity;
-    NSUInteger threadGroupSize = MIN(self.computePipeline.maxTotalThreadsPerThreadgroup, 128);
-    if (threadGroupSize == 0) {
-        threadGroupSize = 1;
-    }
+    NSUInteger threadWidth = MAX(self.computePipeline.threadExecutionWidth, (NSUInteger)1);
+    NSUInteger maxThreads = MAX(self.computePipeline.maxTotalThreadsPerThreadgroup, (NSUInteger)1);
+    NSUInteger threadGroupSize = MIN(maxThreads, threadWidth * 8); // heuristic multiple of SIMD width
+    threadGroupSize = MAX(threadGroupSize, (NSUInteger)1);
     NSUInteger threadGroups = (threadCount + threadGroupSize - 1) / threadGroupSize;
     MTLSize threadsPerGroup = MTLSizeMake(threadGroupSize, 1, 1);
     MTLSize threadgroupCount = MTLSizeMake(threadGroups, 1, 1);
@@ -785,10 +828,12 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     [commandBuffer addCompletedHandler:^(__unused id<MTLCommandBuffer> buffer) {
         __strong typeof(self) strongSelf = weakSelf;
         if (!strongSelf) { return; }
-        dispatch_async(dispatch_get_main_queue(), ^{
+        dispatch_async(strongSelf.particleIndexQueue, ^{
+            // Only add indices that are dead AND not already in availableIndices
+            // This prevents duplicates when particles die, get reused, then die again
             for (NSUInteger idx = 0; idx < strongSelf.capacity; idx++) {
-                if (!strongSelf.states[idx].alive) {
-                    // Phase 3: O(1) deallocation to stack
+                if (!strongSelf.states[idx].alive && ![strongSelf.availableIndices containsIndex:idx]) {
+                    // Phase 3: O(1) deallocation to stack - only add newly dead particles
                     [strongSelf.freeIndicesStack addObject:@(idx)];
                     [strongSelf.availableIndices addIndex:idx];
                 }
@@ -797,6 +842,10 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     }];
 
     [commandBuffer commit];
+    if (self.synchronizesMetalSimulation) {
+        // Ensure CPU snapshots observe the freshly simulated data this frame.
+        [commandBuffer waitUntilCompleted];
+    }
 }
 
 - (void)applyAutomaticBehavioursToState:(SSKParticleState *)state delta:(NSTimeInterval)dt {
