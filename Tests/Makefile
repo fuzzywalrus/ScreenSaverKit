@@ -24,7 +24,8 @@ TEST_SOURCES := \
 	$(CURRENT_DIR)/SSKColorPaletteTests.m \
 	$(CURRENT_DIR)/SSKParticleSystemTests.m \
 	$(CURRENT_DIR)/SSKMetalRendererTests.m \
-	$(CURRENT_DIR)/SSKMetalPassTests.m
+	$(CURRENT_DIR)/SSKMetalPassTests.m \
+	$(CURRENT_DIR)/SSKSpriteTests.m
 
 KIT_SOURCES := \
 	$(KIT_SOURCE_DIR)/SSKColorPalette.m \
@@ -34,6 +35,9 @@ KIT_SOURCES := \
 	$(KIT_SOURCE_DIR)/SSKMetalTextureCache.m \
 	$(KIT_SOURCE_DIR)/SSKMetalPass.m \
 	$(KIT_SOURCE_DIR)/SSKMetalParticlePass.m \
+	$(KIT_SOURCE_DIR)/SSKMetalSpritePass.m \
+	$(KIT_SOURCE_DIR)/SSKSprite.m \
+	$(KIT_SOURCE_DIR)/SSKSpriteAnimationSequence.m \
 	$(KIT_SOURCE_DIR)/SSKMetalBloomPass.m \
 	$(KIT_SOURCE_DIR)/SSKMetalBlurPass.m \
 	$(KIT_SOURCE_DIR)/SSKMetalEffectStage.m \

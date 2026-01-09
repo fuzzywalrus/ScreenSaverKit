@@ -27,9 +27,10 @@ METALC := xcrun -sdk macosx metal -fmodules-cache-path=$(MODULE_CACHE_DIR)
 METALLIB := xcrun -sdk macosx metallib
 
 SHADER_DIR := $(KIT_DIR)/ScreenSaverKit/Shaders
-SHADER_SOURCES := $(SHADER_DIR)/SSKParticleShaders.metal
-SHADER_AIRS := $(SHADER_BUILD_DIR)/SSKParticleShaders.air
-SHADER_METALLIB := $(RESOURCES_DIR)/SSKParticleShaders.metallib
+PARTICLE_SHADER_AIR := $(SHADER_BUILD_DIR)/SSKParticleShaders.air
+SPRITE_SHADER_AIR := $(SHADER_BUILD_DIR)/SSKSpriteShaders.air
+PARTICLE_SHADER_METALLIB := $(RESOURCES_DIR)/SSKParticleShaders.metallib
+SPRITE_SHADER_METALLIB := $(RESOURCES_DIR)/SSKSpriteShaders.metallib
 
 # Add your own source files here. Keep SSKScreenSaverView.m in the list.
 SOURCES := \
@@ -54,6 +55,8 @@ SOURCES := \
 	SSKMetalRenderDiagnostics.m \
 	SSKMetalPass.m \
 	SSKMetalParticlePass.m \
+	SSKMetalSpritePass.m \
+	SSKSprite.m \
 	SSKMetalBloomPass.m \
 	SSKMetalBlurPass.m \
 	SSKLayerEffects.m
@@ -63,9 +66,9 @@ EXECUTABLE := $(MACOS_DIR)/$(SCREENSAVER_NAME)
 
 .PHONY: all clean run
 
-all: $(EXECUTABLE) $(SHADER_METALLIB) $(THUMBNAIL_PNG) $(THUMBNAIL_PNG_2X)
+all: $(EXECUTABLE) $(PARTICLE_SHADER_METALLIB) $(SPRITE_SHADER_METALLIB) $(THUMBNAIL_PNG) $(THUMBNAIL_PNG_2X)
 
-$(EXECUTABLE): $(addprefix $(KIT_DIR)/,$(SOURCES)) $(CONTENTS_DIR)/Info.plist $(SHADER_METALLIB) | $(MACOS_DIR)
+$(EXECUTABLE): $(addprefix $(KIT_DIR)/,$(SOURCES)) $(CONTENTS_DIR)/Info.plist $(PARTICLE_SHADER_METALLIB) $(SPRITE_SHADER_METALLIB) | $(MACOS_DIR)
 	@mkdir -p $(MODULE_CACHE_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) $(FRAMEWORKS) -bundle \
 		-o $@ $(addprefix $(KIT_DIR)/,$(SOURCES))
@@ -83,11 +86,18 @@ $(MACOS_DIR):
 $(SHADER_BUILD_DIR):
 	@mkdir -p $(SHADER_BUILD_DIR)
 
-$(SHADER_BUILD_DIR)/%.air: $(SHADER_DIR)/%.metal | $(SHADER_BUILD_DIR)
+$(SHADER_BUILD_DIR)/SSKParticleShaders.air: $(SHADER_DIR)/SSKParticleShaders.metal | $(SHADER_BUILD_DIR)
 	@mkdir -p $(MODULE_CACHE_DIR)
 	$(METALC) -c $< -o $@
 
-$(RESOURCES_DIR)/%.metallib: $(SHADER_BUILD_DIR)/%.air | $(MACOS_DIR)
+$(SHADER_BUILD_DIR)/SSKSpriteShaders.air: $(SHADER_DIR)/SSKSpriteShaders.metal | $(SHADER_BUILD_DIR)
+	@mkdir -p $(MODULE_CACHE_DIR)
+	$(METALC) -c $< -o $@
+
+$(RESOURCES_DIR)/SSKParticleShaders.metallib: $(PARTICLE_SHADER_AIR) | $(MACOS_DIR)
+	$(METALLIB) $< -o $@
+
+$(RESOURCES_DIR)/SSKSpriteShaders.metallib: $(SPRITE_SHADER_AIR) | $(MACOS_DIR)
 	$(METALLIB) $< -o $@
 
 $(THUMBNAIL_PNG): $(THUMBNAIL_SRC) | $(MACOS_DIR)

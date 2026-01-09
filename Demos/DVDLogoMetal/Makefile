@@ -3,9 +3,9 @@ KIT_DIR := $(abspath $(CURRENT_DIR)/../..)
 KIT_SOURCE_DIR := $(KIT_DIR)/ScreenSaverKit
 KIT_INCLUDE := -I$(KIT_DIR)
 
-SCREENSAVER_NAME ?= MetalParticleTestSaver
-BUNDLE_ID ?= com.example.screenSaverKit.metalParticleTest
-PRINCIPAL_CLASS ?= MetalParticleTestView
+SCREENSAVER_NAME ?= DVDLogoMetalSaver
+BUNDLE_ID ?= com.example.screenSaverKit.dvdlogoMetal
+PRINCIPAL_CLASS ?= DVDLogoMetalView
 BUILD_DIR ?= $(CURRENT_DIR)/Build
 
 BUNDLE_DIR := $(BUILD_DIR)/$(SCREENSAVER_NAME).saver
@@ -33,7 +33,7 @@ PARTICLE_SHADER_METALLIB := $(RESOURCES_DIR)/SSKParticleShaders.metallib
 SPRITE_SHADER_METALLIB := $(RESOURCES_DIR)/SSKSpriteShaders.metallib
 
 SOURCES := \
-	$(CURRENT_DIR)/MetalParticleTestView.m \
+	$(CURRENT_DIR)/DVDLogoMetalView.m \
 	$(KIT_SOURCE_DIR)/SSKScreenSaverView.m \
 	$(KIT_SOURCE_DIR)/SSKAssetManager.m \
 	$(KIT_SOURCE_DIR)/SSKAnimationClock.m \

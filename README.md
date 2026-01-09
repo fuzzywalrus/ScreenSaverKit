@@ -88,6 +88,8 @@ Keeping these concerns in one place lets each screensaver focus on drawing and b
 - `SSKParticleSystem` – lightweight particle engine with CPU and Metal-accelerated rendering modes. Supports additive/alpha blending, automatic fade behaviors, and custom per-particle rendering callbacks. Ideal for sparks, trails, explosions, and flowing ribbon effects. See `ScreenSaverKit/SSKParticleSystem.md` for detailed documentation.
 - `SSKMetalParticleRenderer` – hardware-accelerated particle renderer using Metal. Automatically handles GPU pipeline setup, drawable management, and instanced rendering for high-performance particle effects.
 - `SSKMetalRenderer` + `SSKMetalEffectStage` – extensible Metal post-processing effect system. Register custom effect passes (blur, bloom, color grading, etc.) without modifying framework code. Supports dynamic effect chains with configurable parameters. Built-in blur and bloom effects included. See `architecture-docs/EFFECT_IMPLEMENTATION_GUIDE.md` for detailed documentation on creating custom Metal shader effects.
+- `SSKMetalSpritePass` + `SSKSprite` – 2D sprite rendering system for classic sprite-based screensavers (flying toasters, DVD logo, etc.). Supports position, rotation, non-uniform scaling, horizontal/vertical flipping, color tinting, opacity, z-ordering, and multiple blend modes. Features include sprite animation sequences with loop/ping-pong modes, viewport culling for performance, and pixel-based coordinate system with Retina support. Uses instanced rendering for efficient batch drawing of multiple sprites. See `Demos/DVDLogoMetal/README.md` for a tutorial.
+- `SSKSpriteAnimationSequence` – Immutable animation sequence data for sprite sheet animations. Supports grid-based and custom rect-based sequences, loop modes (Once, Loop, PingPong), per-frame durations, and time-based frame lookup. Integrates seamlessly with `SSKSprite` for automatic UV coordinate updates.
 - `SSKMetalRenderDiagnostics` – real-time Metal rendering diagnostics overlay. Tracks rendering success/failure rates, displays device/layer/renderer status, and shows FPS. Automatically renders a semi-transparent overlay on your CAMetalLayer for debugging Metal pipeline issues. Perfect for development and troubleshooting GPU initialization problems. See `Demos/MetalParticleTest/` for usage example.
 
 ## Architecture Documentation
@@ -143,6 +145,111 @@ self.metalRenderer = [[SSKMetalParticleRenderer alloc] initWithLayer:metalLayer]
 **Automatic CPU Fallback:** If Metal initialization fails or the renderer returns `NO`, the particle system automatically falls back to CPU rendering via `drawInContext:` in your `drawRect:` method.
 
 See `Demos/RibbonFlow/` for a complete working example, and `ScreenSaverKit/SSKParticleSystem.md` for detailed API documentation.
+
+## Using Metal-Accelerated Sprites
+
+The sprite system provides hardware-accelerated 2D rendering for classic sprite-based effects with support for scaling, flipping, animation sequences, and viewport culling.
+
+**Quick Start:**
+```objective-c
+// Subclass SSKMetalScreenSaverView for automatic Metal setup
+@interface MySpriteSaver : SSKMetalScreenSaverView
+@property (nonatomic, strong) SSKSprite *logoSprite;
+@property (nonatomic, strong) id<MTLTexture> logoTexture;
+@end
+
+// Create sprite in setupMetalRenderer:
+- (void)setupMetalRenderer:(SSKMetalRenderer *)renderer {
+    [super setupMetalRenderer:renderer];
+    
+    self.logoSprite = [[SSKSprite alloc] init];
+    
+    // Use pixel coordinates (convert from points for Retina)
+    CGFloat scale = self.window?.backingScaleFactor ?: 1.0;
+    [self.logoSprite setPositionInPoints:NSMakePoint(100, 100) scale:scale];
+    
+    self.logoSprite.size = NSMakeSize(180, 100);  // Size in pixels
+    self.logoSprite.scale = CGSizeMake(1.0, 1.0);  // Scale multiplier
+    self.logoSprite.colorTint = [NSColor redColor];
+    self.logoSprite.opacity = 1.0;
+    
+    // Load texture from image
+    self.logoSprite.image = [NSImage imageNamed:@"logo"];
+    self.logoTexture = [self.logoSprite textureForDevice:renderer.device];
+}
+
+// Render in renderMetalFrame:deltaTime:
+- (void)renderMetalFrame:(SSKMetalRenderer *)renderer deltaTime:(NSTimeInterval)dt {
+    [renderer clearWithColor:renderer.clearColor];
+    
+    // Update sprite animation
+    NSPoint pos = self.logoSprite.position;
+    pos.x += self.velocity.x * dt;
+    CGFloat scale = (self.window != nil) ? self.window.backingScaleFactor : 1.0;
+    [self.logoSprite setPositionInPoints:pos scale:scale];
+    
+    // Draw sprite - renderer handles points-to-pixels conversion internally
+    [renderer drawSprites:@[self.logoSprite]
+                  texture:self.logoTexture
+                blendMode:SSKParticleBlendModeAlpha
+             viewportSize:self.bounds.size];
+}
+```
+
+**Sprite Properties:**
+- `position` – Anchor point position in pixels (not necessarily center)
+- `size` – Width and height in pixels
+- `scale` – Scale multiplier (CGSize). Negative values flip the sprite (canonical flip mechanism)
+- `flipX`/`flipY` – Convenience properties that modify scale sign
+- `rotation` – Rotation angle in radians (direction depends on coordinate transform)
+- `anchor` – Anchor point for rotation/positioning (0,0 = bottom-left, 0.5,0.5 = center, 1,1 = top-right)
+- `colorTint` – Color multiplied with texture (white = no tint)
+- `opacity` – Alpha multiplier (0.0-1.0)
+- `z` – Z-order for depth sorting (higher values render in front)
+- `image` – Source NSImage for texture creation
+- `textureOffset`/`textureSize` – UV coordinates for sprite sheets (normalized 0-1)
+
+**Animation System:**
+```objective-c
+// Create animation sequence from grid-based sprite sheet
+SSKSpriteAnimationSequence *anim = [SSKSpriteAnimationSequence 
+    sequenceWithGridColumns:4 rows:2 frameCount:8 
+    duration:0.1 loopMode:SSKAnimationLoopModeLoop];
+
+// Assign to sprite
+self.logoSprite.animation = anim;
+self.logoSprite.animationRate = 1.0;  // Playback speed
+self.logoSprite.animationPlaying = YES;
+
+// Advance animation each frame
+- (void)renderMetalFrame:(SSKMetalRenderer *)renderer deltaTime:(NSTimeInterval)dt {
+    [self.logoSprite advanceAnimationByTime:dt];
+    // ... render ...
+}
+```
+
+**Coordinate System:**
+- All sprite coordinates and sizes are in **pixels** (not points)
+- On Retina displays, multiply points by `window.backingScaleFactor` or `layer.contentsScale`
+- Use `setPositionInPoints:scale:` helper to convert from points to pixels
+- When using `SSKMetalRenderer.drawSprites:`, pass `viewportSize` in points—the renderer automatically uses the render target's pixel dimensions internally
+
+**Advanced Features:**
+- **Viewport Culling** – Enable `spritePass.cullingEnabled = YES` to skip off-screen sprites
+- **Z-Sorting** – Pass `sortByZ:YES` to `drawSprites:` for automatic back-to-front sorting
+- **Sprite Sheets** – Use `setTextureRectInPixels:textureSize:` for atlas-based sprites
+- **Flip/Mirror** – Set `scale.width < 0` for horizontal flip, `scale.height < 0` for vertical flip, or use `flipX`/`flipY` convenience properties
+
+**Blend Modes:**
+- `SSKParticleBlendModeAlpha` – Standard alpha blending for opaque/transparent sprites (uses premultiplied alpha; color tinting is correctly applied with proper alpha scaling)
+- `SSKParticleBlendModeAdditive` – Additive blending for glow effects
+
+**API Changes:**
+- `SSKMetalSpritePass` methods now use `viewportPixels:` parameter to clarify pixel-based coordinates
+- Old `viewportSize:` methods on `SSKMetalSpritePass` are deprecated but still work (forwarders provided)
+- `SSKMetalRenderer.drawSprites:` accepts `viewportSize:` in points for backward compatibility—it automatically converts to pixels using the render target dimensions
+
+See `Demos/DVDLogoMetal/` for a complete working example with bounce physics, color cycling, and flip-on-bounce effects.
 
 ### Debugging Metal Rendering
 
@@ -239,6 +346,7 @@ The performance testing suite helps verify functionality, measure frame rates, i
 - `Demos/SimpleLines/` – layered drifting lines with palette selection and adjustable colour cycling speed. Build it via
   `make -f Demos/SimpleLines/Makefile`.
 - `Demos/DVDlogo/` – retro floating DVD logo with solid or rotating palette colour modes, adjustable size, speed, colour cycling, and optional random start behaviour. It also uses a multi-file project structure to demo a more advanced project structure. Build it via  `make -f Demos/DVDlogo/Makefile`.
+- `Demos/DVDLogoMetal/` – Metal-accelerated version of the DVD logo screensaver demonstrating the 2D sprite rendering system. Uses `SSKMetalSpritePass` for GPU-accelerated sprite rendering with color cycling on bounce. Includes tutorial documentation explaining sprite rendering concepts. Build it via `make -f Demos/DVDLogoMetal/Makefile`. See `Demos/DVDLogoMetal/README.md` for detailed documentation.
 - `Demos/RibbonFlow/` – flowing additive ribbons inspired by the classic Apple Flurry screensaver. Demonstrates Metal-accelerated particle rendering with the `SSKParticleSystem` and `SSKMetalParticleRenderer` working together for smooth, GPU-powered effects. Build it via `make -f Demos/RibbonFlow/Makefile`.
 - `Demos/Rain/` – classic retro rain animation screensaver with GPU-accelerated particle spawning and optional z-depth perspective effects. Demonstrates simple particle-based effects, adjustable rain angle/speed/density, and hardware-accelerated z-depth calculations for realistic 3D depth illusion. Features include brightness control, width/length customization, and optional FPS counter. Perfect example of using `spawnParticlesGPU:parameters:` with z-depth support. Build it via `make -f Demos/Rain/Makefile`. See `Demos/Rain/README.md` for detailed documentation.
 - `Demos/MetalParticleTest/` – diagnostic particle fountain with automatic Metal/CPU fallback. Shows real-time rendering statistics, particle counts, and detailed Metal pipeline status. Perfect for testing GPU availability and debugging Metal particle renderer issues. Build it via `make -f Demos/MetalParticleTest/Makefile`.

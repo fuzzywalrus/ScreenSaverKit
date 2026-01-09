@@ -37,16 +37,25 @@
 }
 
 + (nullable id<MTLLibrary>)loadParticleShaderLibraryWithDevice:(id<MTLDevice>)device {
+    return [self loadShaderLibraryWithName:@"SSKParticleShaders" device:device];
+}
+
++ (nullable id<MTLLibrary>)loadSpriteShaderLibraryWithDevice:(id<MTLDevice>)device {
+    return [self loadShaderLibraryWithName:@"SSKSpriteShaders" device:device];
+}
+
++ (nullable id<MTLLibrary>)loadShaderLibraryWithName:(NSString *)name device:(id<MTLDevice>)device {
     if (!device) { return nil; }
     NSArray<NSString *> *searchRoots = @[
         [[NSFileManager defaultManager] currentDirectoryPath] ?: @"",
         [[[NSBundle bundleForClass:[self class]] bundlePath] stringByDeletingLastPathComponent] ?: @"",
         [[[NSBundle mainBundle] bundlePath] stringByDeletingLastPathComponent] ?: @""
     ];
+    NSString *shaderFile = [NSString stringWithFormat:@"ScreenSaverKit/Shaders/%@.metal", name];
     NSString *path = nil;
     for (NSString *root in searchRoots) {
         if (root.length == 0) { continue; }
-        NSString *candidate = [root stringByAppendingPathComponent:@"ScreenSaverKit/Shaders/SSKParticleShaders.metal"];
+        NSString *candidate = [root stringByAppendingPathComponent:shaderFile];
         if ([[NSFileManager defaultManager] fileExistsAtPath:candidate]) {
             path = candidate;
             break;
@@ -54,7 +63,7 @@
         NSString *parent = root;
         for (NSUInteger i = 0; i < 4 && parent.length > 1; i++) {
             parent = [parent stringByDeletingLastPathComponent];
-            candidate = [parent stringByAppendingPathComponent:@"ScreenSaverKit/Shaders/SSKParticleShaders.metal"];
+            candidate = [parent stringByAppendingPathComponent:shaderFile];
             if ([[NSFileManager defaultManager] fileExistsAtPath:candidate]) {
                 path = candidate;
                 break;
@@ -63,7 +72,7 @@
         if (path) { break; }
     }
     if (!path) {
-        NSLog(@"SSKTestHelpers: could not locate SSKParticleShaders.metal for Metal tests.");
+        NSLog(@"SSKTestHelpers: could not locate %@.metal for Metal tests.", name);
         return nil;
     }
     NSError *readError = nil;
@@ -75,7 +84,7 @@
     NSError *compileError = nil;
     id<MTLLibrary> library = [device newLibraryWithSource:source options:nil error:&compileError];
     if (!library && compileError) {
-        NSLog(@"SSKTestHelpers: Metal shader compilation failed: %@", compileError);
+        NSLog(@"SSKTestHelpers: Metal shader compilation failed for %@: %@", name, compileError);
     }
     return library;
 }

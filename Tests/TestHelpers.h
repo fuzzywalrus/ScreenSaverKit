@@ -26,6 +26,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// Returns nil and logs on failure.
 + (nullable id<MTLLibrary>)loadParticleShaderLibraryWithDevice:(id<MTLDevice>)device;
 
+/// Attempts to load the sprite shader library from source for Metal tests.
+/// Returns nil and logs on failure.
++ (nullable id<MTLLibrary>)loadSpriteShaderLibraryWithDevice:(id<MTLDevice>)device;
+
 @end
 
 NS_ASSUME_NONNULL_END

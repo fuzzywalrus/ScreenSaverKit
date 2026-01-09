@@ -4,6 +4,8 @@
 #import "SSKParticleSystem.h"
 #import "SSKDiagnostics.h"
 #import "SSKMetalParticlePass.h"
+#import "SSKMetalSpritePass.h"
+#import "SSKSprite.h"
 #import "SSKMetalBlurPass.h"
 #import "SSKMetalBloomPass.h"
 
@@ -22,6 +24,8 @@ NSString * const SSKMetalEffectIdentifierColorGrading = @"com.ssk.effects.colorg
 @property (nonatomic, readwrite) CGSize drawableSize;
 @property (nonatomic, strong) id<MTLLibrary> shaderLibrary;
 @property (nonatomic, strong, readwrite) SSKMetalParticlePass *particlePass;
+@property (nonatomic, strong, readwrite, nullable) SSKMetalSpritePass *spritePass;
+@property (nonatomic, strong, nullable) id<MTLLibrary> spriteShaderLibrary;
 @property (nonatomic, strong, nullable) SSKMetalBlurPass *blurPass;
 @property (nonatomic, strong, nullable) SSKMetalBloomPass *bloomPass;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, SSKMetalEffectStage *> *effectRegistry;
@@ -70,6 +74,21 @@ NSString * const SSKMetalEffectIdentifierColorGrading = @"com.ssk.effects.colorg
             [SSKDiagnostics log:@"SSKMetalRenderer: failed to set up particle pass."];
             return nil;
         }
+        
+        // Initialize sprite pass (optional - continues without it if shaders unavailable)
+        _spriteShaderLibrary = [self loadSpriteShaderLibraryWithDevice:device];
+        if (_spriteShaderLibrary) {
+            _spritePass = [[SSKMetalSpritePass alloc] init];
+            if (![_spritePass setupWithDevice:device library:_spriteShaderLibrary]) {
+                if ([SSKDiagnostics isEnabled]) {
+                    [SSKDiagnostics log:@"SSKMetalRenderer: sprite pass unavailable (continuing without sprite support)."];
+                }
+                _spritePass = nil;
+            }
+        } else if ([SSKDiagnostics isEnabled]) {
+            [SSKDiagnostics log:@"SSKMetalRenderer: sprite shaders unavailable (continuing without sprite support)."];
+        }
+        
         _blurPass = [[SSKMetalBlurPass alloc] init];
         if (![_blurPass setupWithDevice:device library:_shaderLibrary]) {
             if ([SSKDiagnostics isEnabled]) {
@@ -214,11 +233,85 @@ NSString * const SSKMetalEffectIdentifierColorGrading = @"com.ssk.effects.colorg
 }
 
 - (void)drawTexture:(id<MTLTexture>)texture atRect:(CGRect)rect {
-    (void)texture;
-    (void)rect;
-    if ([SSKDiagnostics isEnabled]) {
-        [SSKDiagnostics log:@"SSKMetalRenderer: drawTexture:atRect: invoked but not yet implemented."];
+    if (!texture) { return; }
+    
+    // Create a single sprite to render the texture
+    // NOTE: rect is expected to be in PIXELS, not points.
+    // On Retina displays, callers must multiply point coordinates by backingScaleFactor.
+    SSKSprite *sprite = [[SSKSprite alloc] init];
+    sprite.position = NSMakePoint(NSMidX(rect), NSMidY(rect));  // Center of rect in pixels
+    sprite.size = rect.size;  // Size in pixels
+    sprite.rotation = 0.0;
+    sprite.colorTint = [NSColor whiteColor];
+    sprite.opacity = 1.0;
+    
+    [self drawSprites:@[sprite]
+              texture:texture
+            blendMode:SSKParticleBlendModeAlpha
+         viewportSize:self.drawableSize];
+}
+
+- (void)drawSprites:(NSArray<SSKSprite *> *)sprites
+            texture:(id<MTLTexture>)texture
+          blendMode:(SSKParticleBlendMode)blendMode
+       viewportSize:(CGSize)viewportSize {
+    // Use spriteSortingEnabled property as default
+    [self drawSprites:sprites
+              texture:texture
+            blendMode:blendMode
+         viewportSize:viewportSize
+              sortByZ:self.spriteSortingEnabled];
+}
+
+- (void)drawSprites:(NSArray<SSKSprite *> *)sprites
+            texture:(id<MTLTexture>)texture
+          blendMode:(SSKParticleBlendMode)blendMode
+       viewportSize:(CGSize)viewportSize
+            sortByZ:(BOOL)sortByZ {
+    if (!self.spritePass) {
+        if ([SSKDiagnostics isEnabled]) {
+            [SSKDiagnostics log:@"SSKMetalRenderer: drawSprites called but sprite pass is unavailable."];
+        }
+        return;
     }
+    
+    id<MTLCommandBuffer> commandBuffer = self.currentCommandBuffer;
+    id<MTLTexture> target = [self activeRenderTarget];
+    if (!commandBuffer || !target) { return; }
+    
+    // Always use the render target's pixel dimensions for viewportPixels.
+    // This is the only reliable source of truth for the actual rendering size.
+    //
+    // The viewportSize parameter is in points for backward compatibility,
+    // but the sprite pass requires pixels. Using target.width/height directly
+    // handles both normal drawable rendering and overrideRenderTarget cases.
+    CGSize viewportPixels = CGSizeMake(target.width, target.height);
+    if (viewportPixels.width <= 0 || viewportPixels.height <= 0) {
+        // Render target has invalid dimensions - this shouldn't happen.
+        // Log and return rather than drawing with incorrect scaling.
+        if ([SSKDiagnostics isEnabled]) {
+            [SSKDiagnostics log:@"SSKMetalRenderer: render target has invalid dimensions (%g x %g), skipping draw",
+                viewportPixels.width, viewportPixels.height];
+        }
+        NSAssert(NO, @"SSKMetalRenderer: render target has invalid dimensions (%g x %g)",
+                 viewportPixels.width, viewportPixels.height);
+        return;  // Don't draw with incorrect dimensions
+    }
+    
+    MTLLoadAction loadAction = self.needsClearOnNextPass ? MTLLoadActionClear : MTLLoadActionLoad;
+    BOOL success = [self.spritePass encodeSprites:sprites
+                                          texture:texture
+                                        blendMode:blendMode
+                                   viewportPixels:viewportPixels
+                                    commandBuffer:commandBuffer
+                                     renderTarget:target
+                                       loadAction:loadAction
+                                       clearColor:self.clearColor
+                                          sortByZ:sortByZ];
+    if (!success && [SSKDiagnostics isEnabled]) {
+        [SSKDiagnostics log:@"SSKMetalRenderer: sprite pass failed to encode."];
+    }
+    self.needsClearOnNextPass = NO;
 }
 
 - (void)applyBlur:(CGFloat)radius {
@@ -295,6 +388,21 @@ NSString * const SSKMetalEffectIdentifierColorGrading = @"com.ssk.effects.colorg
         self.effectRegistry = [[NSMutableDictionary alloc] init];
     }
     self.effectRegistry[stage.identifier] = stage;
+    
+    // Effect Stage Coupling: Blur and Bloom
+    //
+    // The bloom effect depends on the blur effect internally (it uses blur for the glow).
+    // When either effect is registered, we automatically connect them:
+    //   - When blur is registered: Tell bloom to use this blur pass
+    //   - When bloom is registered: Find blur and connect them
+    //
+    // This coupling is intentional - it ensures bloom works correctly without requiring
+    // callers to manually wire up the dependency. If you replace the blur stage, the
+    // bloom will automatically use the new blur pass.
+    //
+    // If you need bloom without blur, or with a different blur implementation, you can:
+    //   1. Register a custom bloom stage that doesn't use blur
+    //   2. Call [bloomPass setSharedBlurPass:nil] after registration
     if ([stage.identifier isEqualToString:SSKMetalEffectIdentifierBlur]) {
         if ([stage.pass isKindOfClass:[SSKMetalBlurPass class]]) {
             [self.bloomPass setSharedBlurPass:(SSKMetalBlurPass *)stage.pass];
@@ -481,6 +589,70 @@ NSString * const SSKMetalEffectIdentifierColorGrading = @"com.ssk.effects.colorg
     id<MTLLibrary> library = [device newLibraryWithSource:source options:nil error:&error];
     if (!library && [SSKDiagnostics isEnabled]) {
         [SSKDiagnostics log:@"SSKMetalRenderer: failed to compile Metal source at %@ (%@).", metalSourcePath, error.localizedDescription ?: @"unknown error"];
+    }
+    return library;
+}
+
+- (nullable id<MTLLibrary>)loadSpriteShaderLibraryWithDevice:(id<MTLDevice>)device {
+    NSBundle *bundle = [NSBundle bundleForClass:self.class];
+    
+    // First try to load precompiled metallib
+    NSString *metallibPath = [bundle pathForResource:@"SSKSpriteShaders" ofType:@"metallib"];
+    NSError *error = nil;
+    if (metallibPath.length > 0) {
+        NSURL *metallibURL = [NSURL fileURLWithPath:metallibPath];
+        id<MTLLibrary> library = [device newLibraryWithURL:metallibURL error:&error];
+        if (library) {
+            return library;
+        }
+        if ([SSKDiagnostics isEnabled]) {
+            [SSKDiagnostics log:@"SSKMetalRenderer: failed to load sprite metallib at %@ (%@).", metallibPath, error.localizedDescription ?: @"unknown error"];
+        }
+    }
+    
+    // Fallback: compile from source
+    NSString *metalSourcePath = [bundle pathForResource:@"SSKSpriteShaders" ofType:@"metal"];
+    if (!metalSourcePath) {
+        // Attempt to locate the source relative to the bundle path by walking upwards.
+        NSString *probe = bundle.bundlePath;
+        for (NSUInteger i = 0; i < 5 && probe.length > 1; i++) {
+            NSString *candidate = [probe stringByAppendingPathComponent:@"ScreenSaverKit/Shaders/SSKSpriteShaders.metal"];
+            if ([[NSFileManager defaultManager] fileExistsAtPath:candidate]) {
+                metalSourcePath = candidate;
+                break;
+            }
+            probe = [probe stringByDeletingLastPathComponent];
+        }
+        // Try current working directory as a last resort (unit tests).
+        if (!metalSourcePath) {
+            NSString *cwd = [[NSFileManager defaultManager] currentDirectoryPath];
+            NSString *candidate = [cwd stringByAppendingPathComponent:@"ScreenSaverKit/Shaders/SSKSpriteShaders.metal"];
+            if ([[NSFileManager defaultManager] fileExistsAtPath:candidate]) {
+                metalSourcePath = candidate;
+            }
+        }
+    }
+    
+    if (metalSourcePath.length == 0) {
+        if ([SSKDiagnostics isEnabled]) {
+            [SSKDiagnostics log:@"SSKMetalRenderer: Sprite Metal source not found; cannot compile sprite library."];
+        }
+        return nil;
+    }
+    
+    NSError *readError = nil;
+    NSString *source = [NSString stringWithContentsOfFile:metalSourcePath encoding:NSUTF8StringEncoding error:&readError];
+    if (!source) {
+        if ([SSKDiagnostics isEnabled]) {
+            [SSKDiagnostics log:@"SSKMetalRenderer: failed to read sprite Metal source at %@ (%@).", metalSourcePath, readError.localizedDescription ?: @"unknown error"];
+        }
+        return nil;
+    }
+    
+    error = nil;
+    id<MTLLibrary> library = [device newLibraryWithSource:source options:nil error:&error];
+    if (!library && [SSKDiagnostics isEnabled]) {
+        [SSKDiagnostics log:@"SSKMetalRenderer: failed to compile sprite Metal source at %@ (%@).", metalSourcePath, error.localizedDescription ?: @"unknown error"];
     }
     return library;
 }

@@ -8,7 +8,9 @@
 NS_ASSUME_NONNULL_BEGIN
 
 @class SSKMetalParticlePass;
+@class SSKMetalSpritePass;
 @class SSKMetalTextureCache;
+@class SSKSprite;
 
 FOUNDATION_EXPORT NSString * const SSKMetalEffectIdentifierBlur;
 FOUNDATION_EXPORT NSString * const SSKMetalEffectIdentifierBloom;
@@ -46,8 +48,47 @@ FOUNDATION_EXPORT NSString * const SSKMetalEffectIdentifierColorGrading;
                      blendMode:(SSKParticleBlendMode)blendMode
                   viewportSize:(CGSize)viewportSize;
 
-/// Draws a texture into the current render target.
+/// Draws a texture into the current render target at the specified rectangle.
+///
+/// @param texture The Metal texture to draw
+/// @param rect The destination rectangle in PIXELS (not points).
+///             On Retina displays, multiply point coordinates by backingScaleFactor.
+///             The texture is drawn centered at the rect's center with the rect's size.
+///
+/// @note This is a convenience method that creates a temporary sprite internally.
+///       For rendering multiple textures efficiently, use drawSprites: instead.
 - (void)drawTexture:(id<MTLTexture>)texture atRect:(CGRect)rect;
+
+/// Renders an array of SSKSprite objects with the specified texture and blend mode.
+///
+/// @param sprites Array of SSKSprite objects to render. Sprite positions and sizes must be in PIXELS.
+/// @param texture The texture to apply to all sprites (or nil for solid color). Must use premultiplied alpha.
+/// @param blendMode Blend mode (alpha or additive)
+/// @param viewportSize Ignored. Viewport dimensions are taken from the render target's pixel dimensions.
+///                     This parameter exists for API compatibility but has no effect.
+///
+/// @note Sprite coordinates are in pixels. On Retina displays, use sprite.setPositionInPoints:scale: to convert.
+/// @note The renderer automatically uses the render target's pixel dimensions for the viewport.
+- (void)drawSprites:(NSArray<SSKSprite *> *)sprites
+            texture:(nullable id<MTLTexture>)texture
+          blendMode:(SSKParticleBlendMode)blendMode
+       viewportSize:(CGSize)viewportSize;
+
+/// Renders an array of SSKSprite objects with explicit sort control.
+///
+/// @param sprites Array of SSKSprite objects to render. Sprite positions and sizes must be in PIXELS.
+/// @param texture The texture to apply to all sprites (or nil for solid color). Must use premultiplied alpha.
+/// @param blendMode Blend mode (alpha or additive)
+/// @param viewportSize Ignored. Viewport dimensions are taken from the render target's pixel dimensions.
+/// @param sortByZ If YES, sprites are sorted by z before rendering (lower z first = behind)
+///
+/// @note Sprite coordinates are in pixels. On Retina displays, use sprite.setPositionInPoints:scale: to convert.
+/// @note The renderer automatically uses the render target's pixel dimensions for the viewport.
+- (void)drawSprites:(NSArray<SSKSprite *> *)sprites
+            texture:(nullable id<MTLTexture>)texture
+          blendMode:(SSKParticleBlendMode)blendMode
+       viewportSize:(CGSize)viewportSize
+            sortByZ:(BOOL)sortByZ;
 
 /// Applies a separable Gaussian blur to the current render target.
 - (void)applyBlur:(CGFloat)radius;
@@ -97,7 +138,11 @@ FOUNDATION_EXPORT NSString * const SSKMetalEffectIdentifierColorGrading;
 /// Texture cache shared by render passes for intermediate allocations.
 @property (nonatomic, strong, readonly) SSKMetalTextureCache *textureCache;
 
-/// Convenience property used by legacy wrappers to request a post-particle blur.
+/// Stores the last blur radius passed to applyBlur:.
+/// This property is set when applyBlur: is called, before the blur is applied.
+/// Use this to read the current blur radius setting or for state inspection.
+/// Note: This is set even if blur fails (e.g., blur pass unavailable).
+/// Legacy wrappers may use this to request a post-particle blur.
 @property (nonatomic) CGFloat particleBlurRadius;
 
 /// Bloom threshold (0-1) used when applyBloom: is invoked. Defaults to 0.8.
@@ -109,10 +154,17 @@ FOUNDATION_EXPORT NSString * const SSKMetalEffectIdentifierColorGrading;
 /// Particle pass used for rendering particles. Exposed for configuration.
 @property (nonatomic, strong, readonly) SSKMetalParticlePass *particlePass;
 
+/// Sprite pass used for rendering 2D sprites. Exposed for configuration.
+@property (nonatomic, strong, readonly, nullable) SSKMetalSpritePass *spritePass;
+
 /// Enable GPU-accelerated indirect rendering for particle systems.
 /// When enabled, instance buffer building happens on GPU instead of CPU.
 /// Requires Metal device with indirect command support. Defaults to NO.
 @property (nonatomic) BOOL useIndirectRendering;
+
+/// When YES, drawSprites: automatically sorts sprites by z (back-to-front).
+/// Default is NO for backward compatibility.
+@property (nonatomic) BOOL spriteSortingEnabled;
 
 @end
 
