@@ -96,3 +96,4 @@ Right-click the screensaver preview and select "Screen Saver Options" to:
 - **Memory Growing**: Check for memory leaks in scenario 5
 - **Metrics Not Updating**: Ensure screensaver is active (not just preview)
 
+

@@ -1191,4 +1191,46 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     [self.indexToAlivePosition removeObjectForKey:indexNum];
 }
 
+- (void)releaseMetalResources {
+    // Wait for any pending GPU work to complete
+    if (self.frameFence) {
+        // Try to acquire the fence with a timeout to avoid blocking forever
+        dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC));
+        dispatch_semaphore_wait(self.frameFence, timeout);
+        dispatch_semaphore_signal(self.frameFence); // Release immediately
+    }
+    
+    // Release Metal pipelines and buffers
+    self.computePipeline = nil;
+    self.initializePipeline = nil;
+    self.shaderLibrary = nil;
+    
+    // Release command queue (this stops any pending commands)
+    self.commandQueue = nil;
+    
+    // Release buffers - but keep states pointer valid by allocating CPU memory
+    if (self.particleBuffer) {
+        // Copy current state to CPU memory before releasing Metal buffer
+        if (self.states == self.particleBuffer.contents) {
+            SSKParticleState *cpuStates = calloc(self.capacity, sizeof(SSKParticleState));
+            if (cpuStates) {
+                memcpy(cpuStates, self.states, self.capacity * sizeof(SSKParticleState));
+                self.states = cpuStates;
+            }
+        }
+        self.particleBuffer = nil;
+    }
+    
+    self.uniformsBuffer = nil;
+    self.previousFrameBuffer = nil;
+    self.hasPreviousFrame = NO;
+    
+    // Release Metal device last
+    self.metalDevice = nil;
+    
+    // Mark Metal simulation as unavailable until resources are recreated
+    self.supportsMetalSimulation = NO;
+    _metalSimulationEnabled = NO;
+}
+
 @end

@@ -226,6 +226,11 @@ typedef NS_ENUM(NSUInteger, SSKMetalSimulationRenderMode) {
 /// Resets and removes all particles.
 - (void)reset;
 
+/// Releases Metal resources to reduce memory footprint when idle.
+/// Call this when the screensaver stops animating. Metal resources will be
+/// lazily recreated when the simulation starts again.
+- (void)releaseMetalResources;
+
 @end
 
 NS_ASSUME_NONNULL_END

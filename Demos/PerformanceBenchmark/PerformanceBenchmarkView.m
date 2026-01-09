@@ -89,6 +89,33 @@ typedef NS_ENUM(NSUInteger, SSKBenchmarkScenario) {
     return self;
 }
 
+- (void)startAnimation {
+    [super startAnimation];
+    
+    // Re-enable Metal simulation (will lazily recreate resources if they were released)
+    self.particleSystem.metalSimulationEnabled = self.useMetalSimulation;
+    
+    // Reset metrics
+    self.totalFrames = 0;
+    self.totalSpawned = 0;
+    self.currentParticleCount = 0;
+    [self.frameTimeHistory removeAllObjects];
+    [self.performanceData removeAllObjects];
+}
+
+- (void)stopAnimation {
+    // Reset particle system to release active particles
+    [self.particleSystem reset];
+    
+    // Release Metal resources when idle to reduce memory footprint
+    [self.particleSystem releaseMetalResources];
+    
+    // Stop recording if active
+    self.recordingData = NO;
+    
+    [super stopAnimation];
+}
+
 - (void)setupMetalRenderer:(SSKMetalRenderer *)renderer {
     [super setupMetalRenderer:renderer];
     if (renderer && self.metalLayer) {
@@ -454,11 +481,23 @@ typedef NS_ENUM(NSUInteger, SSKBenchmarkScenario) {
     }
     
     NSSavePanel *savePanel = [NSSavePanel savePanel];
+    #if __has_include(<UniformTypeIdentifiers/UniformTypeIdentifiers.h>)
     if (@available(macOS 11.0, *)) {
         savePanel.allowedContentTypes = @[[UTType typeWithIdentifier:@"public.json"]];
     } else {
+        // Fallback for macOS 10.x
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Wdeprecated-declarations"
         savePanel.allowedFileTypes = @[@"json"];
+        #pragma clang diagnostic pop
     }
+    #else
+    // Fallback for systems without UniformTypeIdentifiers
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    savePanel.allowedFileTypes = @[@"json"];
+    #pragma clang diagnostic pop
+    #endif
     savePanel.nameFieldStringValue = @"performance_data.json";
     
     if ([savePanel runModal] == NSModalResponseOK) {

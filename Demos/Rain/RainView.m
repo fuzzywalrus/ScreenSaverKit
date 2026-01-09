@@ -90,6 +90,9 @@ static NSString * const kPrefShowFPS = @"rainShowFPS";
 - (void)startAnimation {
     [super startAnimation];
     
+    // Re-enable Metal simulation (will lazily recreate resources if they were released)
+    self.particleSystem.metalSimulationEnabled = YES;
+    
     // Force reload preferences when animation starts (important for full screen mode)
     NSDictionary *prefs = [self currentPreferences];
     [self preferencesDidChange:prefs changedKeys:[NSSet setWithArray:prefs.allKeys]];
@@ -98,6 +101,25 @@ static NSString * const kPrefShowFPS = @"rainShowFPS";
     if (self.fpsLayer) {
         self.fpsLayer.hidden = !self.showFPS;
     }
+}
+
+- (void)stopAnimation {
+    // Reset particle system to release active particles and prepare for idle
+    [self.particleSystem reset];
+    
+    // Release Metal resources when idle to reduce memory footprint
+    [self.particleSystem releaseMetalResources];
+    
+    // Remove FPS layer
+    if (self.fpsLayer) {
+        [self.fpsLayer removeFromSuperlayer];
+        self.fpsLayer = nil;
+    }
+    
+    // Reset spawn timer
+    self.lastSpawnTime = 0.0;
+    
+    [super stopAnimation];
 }
 
 - (void)preferencesDidChange:(NSDictionary<NSString *,id> *)preferences changedKeys:(NSSet<NSString *> *)changedKeys {

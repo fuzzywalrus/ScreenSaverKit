@@ -39,3 +39,4 @@ install: $(EXECUTABLE)
 	cp "$(EXECUTABLE)" /usr/local/bin/ssk-benchmark 2>/dev/null || \
 	echo "Note: Could not install to /usr/local/bin. Run from: $(EXECUTABLE)"
 
+
