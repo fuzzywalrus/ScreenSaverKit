@@ -128,6 +128,10 @@ static const CGFloat kSSKUV_Epsilon = 1e-6;
 - (void)setImage:(NSImage *)image {
     if (_image != image) {
         _image = image;
+        if (image) {
+            // Keep size in sync with new image pixel dimensions by default.
+            _size = [SSKSprite pixelSizeOfImage:image];
+        }
         [self invalidateTexture];
     }
 }
@@ -508,4 +512,3 @@ static const CGFloat kSSKUV_Epsilon = 1e-6;
 }
 
 @end
-

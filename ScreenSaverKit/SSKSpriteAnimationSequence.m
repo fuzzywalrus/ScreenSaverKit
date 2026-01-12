@@ -391,11 +391,11 @@
     // We iterate backwards from N-2 down to 1, accumulating durations
     // until we find which frame the backwardTime falls into
     NSTimeInterval cumulative = 0;
-    for (NSUInteger i = count - 2; i >= 1; i--) {
-        NSTimeInterval frameDur = [self durationForFrame:i];
+    for (NSInteger i = (NSInteger)count - 2; i >= 1; i--) {
+        NSTimeInterval frameDur = [self durationForFrame:(NSUInteger)i];
         cumulative += frameDur;
         if (backwardTime < cumulative) {
-            return i;
+            return (NSUInteger)i;
         }
     }
     return 1;  // Should not reach here, but return frame 1 as fallback
