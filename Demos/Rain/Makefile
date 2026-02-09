@@ -30,7 +30,11 @@ SOURCES := \
 	$(KIT_SOURCE_DIR)/SSKMetalBloomPass.m \
 	$(KIT_SOURCE_DIR)/SSKMetalBlurPass.m \
 	$(KIT_SOURCE_DIR)/SSKMetalEffectStage.m \
+	$(KIT_SOURCE_DIR)/SSKMetalSpritePass.m \
+	$(KIT_SOURCE_DIR)/SSKMetalRenderDiagnostics.m \
 	$(KIT_SOURCE_DIR)/SSKMetalParticleRenderer.m \
+	$(KIT_SOURCE_DIR)/SSKSprite.m \
+	$(KIT_SOURCE_DIR)/SSKSpriteAnimationSequence.m \
 	$(KIT_SOURCE_DIR)/SSKAssetManager.m \
 	$(KIT_SOURCE_DIR)/SSKAnimationClock.m \
 	$(KIT_SOURCE_DIR)/SSKEntityPool.m \

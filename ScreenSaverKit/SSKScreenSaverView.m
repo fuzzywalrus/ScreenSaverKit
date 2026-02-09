@@ -5,6 +5,37 @@
 
 static const NSTimeInterval kSSKPreferencePollInterval = 2.0;
 
+/// Weak proxy to break NSTimer → target retain cycle.
+/// NSTimer retains its target strongly, which would prevent dealloc if the
+/// timer outlives the expected stopAnimation call.
+@interface SSKTimerWeakProxy : NSObject
+@property (nonatomic, weak) id target;
+@property (nonatomic) SEL selector;
+- (instancetype)initWithTarget:(id)target selector:(SEL)selector;
+- (void)timerFired:(NSTimer *)timer;
+@end
+
+@implementation SSKTimerWeakProxy
+- (instancetype)initWithTarget:(id)target selector:(SEL)selector {
+    if ((self = [super init])) {
+        _target = target;
+        _selector = selector;
+    }
+    return self;
+}
+- (void)timerFired:(NSTimer *)timer {
+    id strongTarget = self.target;
+    if (strongTarget) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+        [strongTarget performSelector:self.selector withObject:timer];
+#pragma clang diagnostic pop
+    } else {
+        [timer invalidate];
+    }
+}
+@end
+
 @interface SSKScreenSaverView ()
 @property (nonatomic, strong) NSTimer *ssk_preferenceWatchTimer;
 @property (nonatomic, copy) NSDictionary<NSString *, id> *ssk_lastKnownPreferences;
@@ -135,9 +166,11 @@ static const NSTimeInterval kSSKPreferencePollInterval = 2.0;
         }];
     }
     if (!self.ssk_preferenceWatchTimer) {
+        SSKTimerWeakProxy *proxy = [[SSKTimerWeakProxy alloc] initWithTarget:self
+                                                                    selector:@selector(ssk_checkPreferenceChanges:)];
         NSTimer *timer = [NSTimer timerWithTimeInterval:kSSKPreferencePollInterval
-                                                 target:self
-                                               selector:@selector(ssk_checkPreferenceChanges:)
+                                                 target:proxy
+                                               selector:@selector(timerFired:)
                                                userInfo:nil
                                                 repeats:YES];
         self.ssk_preferenceWatchTimer = timer;

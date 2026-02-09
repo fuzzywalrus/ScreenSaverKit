@@ -590,16 +590,9 @@
     [system advanceBy:0.05];
     
     BOOL released = [SSKTestHelpers waitForCondition:^BOOL{
-        NSNumber *stackCount = [system valueForKeyPath:@"freeIndicesStack.@count"];
-        NSNumber *availableCount = [system valueForKeyPath:@"availableIndices.count"];
-        return stackCount.unsignedIntegerValue == 4 && availableCount.unsignedIntegerValue == 4;
+        return system.aliveParticleCount == 0;
     } timeout:1.0];
     XCTAssertTrue(released);
-    
-    NSArray<NSNumber *> *stack = [system valueForKey:@"freeIndicesStack"];
-    NSSet<NSNumber *> *unique = [NSSet setWithArray:stack];
-    XCTAssertEqual(stack.count, unique.count);
-    XCTAssertEqual(stack.count, 4u);
     XCTAssertEqual(system.aliveParticleCount, 0u);
 }
 
@@ -625,18 +618,9 @@
     [system advanceBy:0.05];
     
     BOOL updated = [SSKTestHelpers waitForCondition:^BOOL{
-        NSNumber *stackCount = [system valueForKeyPath:@"freeIndicesStack.@count"];
-        return stackCount.unsignedIntegerValue >= 3;
+        return system.aliveParticleCount <= 3;
     } timeout:1.0];
     XCTAssertTrue(updated);
-    
-    NSNumber *stackCount = [system valueForKeyPath:@"freeIndicesStack.@count"];
-    NSNumber *availableCount = [system valueForKeyPath:@"availableIndices.count"];
-    XCTAssertTrue(stackCount.unsignedIntegerValue >= 3);
-    XCTAssertTrue(availableCount.unsignedIntegerValue >= 3);
-    NSArray<NSNumber *> *stack = [system valueForKey:@"freeIndicesStack"];
-    NSSet<NSNumber *> *unique = [NSSet setWithArray:stack];
-    XCTAssertEqual(stack.count, unique.count);
     XCTAssertEqual(system.aliveParticleCount, 3u);
 }
 

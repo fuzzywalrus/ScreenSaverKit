@@ -4,7 +4,7 @@ This document describes the performance optimizations available in ScreenSaverKi
 
 ## Overview
 
-ScreenSaverKit includes three major performance optimizations for the particle system, implemented in December 2024:
+ScreenSaverKit includes three major performance optimizations for the particle system (December 2024) and several memory leak fixes (February 2025):
 
 1. **Alive Particle Tracking** - Eliminates O(capacity) scans in particle snapshots
 2. **Async Rendering Mode** - Removes GPU wait points for parallel CPU/GPU execution
@@ -43,30 +43,36 @@ With a capacity of 10,000 but only 100 alive particles, this scanned 9,900 dead 
 
 ### Solution
 
-Maintains a separate sparse array of alive particle indices using a **dense array + reverse lookup pattern**:
+Maintains a separate sparse array of alive particle indices using a **dense array + reverse lookup pattern** with raw C arrays (no NSNumber boxing overhead):
 
-- `aliveIndicesArray`: Compact list of alive particle indices
-- `indexToAlivePosition`: Maps particle index → position in aliveIndicesArray
+- `_aliveList` / `_aliveListCount`: Compact C array of alive particle indices
+- `_alivePositionMap`: Maps particle index → position in aliveList (NSNotFound = not alive)
+- `_freeStack` / `_freeStackCount`: C array free-list for recycling indices
 
-This enables O(1) add/remove operations and O(alive_count) iteration.
+This enables O(1) add/remove operations and O(alive_count) iteration with zero Objective-C object allocation in the hot path.
 
 ### Implementation Details
 
-**Data Structures (SSKParticleSystem.m:312-316):**
+**Data Structures (SSKParticleSystem.m, C ivars):**
 ```objc
-@property (nonatomic, strong) NSMutableArray<NSNumber *> *aliveIndicesArray;
-@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSNumber *> *indexToAlivePosition;
+@interface SSKParticleSystem () {
+    NSUInteger *_freeStack;
+    NSUInteger _freeStackCount;
+    NSUInteger *_aliveList;
+    NSUInteger _aliveListCount;
+    NSUInteger *_alivePositionMap;   // NSNotFound = not alive
+}
 ```
 
-**Optimized Snapshot (SSKParticleSystem.m:1087-1119):**
+**Optimized Snapshot:**
 ```objc
 - (NSArray<SSKParticle *> *)aliveParticlesSnapshot {
     NSMutableArray<SSKParticle *> *alive = self.aliveScratch;
     [alive removeAllObjects];
 
-    // Only iterate alive particles!
-    for (NSNumber *indexNum in self.aliveIndicesArray) {
-        NSUInteger idx = [indexNum unsignedIntegerValue];
+    // Only iterate alive particles — direct C array access, no NSNumber boxing
+    for (NSUInteger i = 0; i < _aliveListCount; i++) {
+        NSUInteger idx = _aliveList[i];
         [alive addObject:self.particles[idx]];
     }
 
@@ -74,25 +80,23 @@ This enables O(1) add/remove operations and O(alive_count) iteration.
 }
 ```
 
-**Removal Helper (SSKParticleSystem.m:1081-1098):**
+**Removal Helper (O(1) swap-remove):**
 ```objc
 - (void)removeFromAliveTracking:(NSUInteger)index {
-    NSNumber *indexNum = @(index);
-    NSNumber *positionNum = [self.indexToAlivePosition objectForKey:indexNum];
-    if (!positionNum) { return; }
+    NSUInteger position = _alivePositionMap[index];
+    if (position == NSNotFound) { return; }
 
-    NSUInteger position = [positionNum unsignedIntegerValue];
-    NSUInteger lastPos = self.aliveIndicesArray.count - 1;
+    NSUInteger lastPos = _aliveListCount - 1;
 
     if (position != lastPos) {
         // Swap with last element for O(1) removal
-        NSNumber *lastIndex = self.aliveIndicesArray[lastPos];
-        self.aliveIndicesArray[position] = lastIndex;
-        self.indexToAlivePosition[lastIndex] = @(position);
+        NSUInteger lastIndex = _aliveList[lastPos];
+        _aliveList[position] = lastIndex;
+        _alivePositionMap[lastIndex] = position;
     }
 
-    [self.aliveIndicesArray removeLastObject];
-    [self.indexToAlivePosition removeObjectForKey:indexNum];
+    _aliveListCount--;
+    _alivePositionMap[index] = NSNotFound;
 }
 ```
 
@@ -145,14 +149,14 @@ typedef NS_ENUM(NSUInteger, SSKMetalSimulationRenderMode) {
 @property (nonatomic) SSKMetalSimulationRenderMode metalSimulationRenderMode;
 ```
 
-**Data Structures (SSKParticleSystem.m:312-316):**
+**Data Structures:**
 ```objc
 @property (nonatomic, strong) id<MTLBuffer> previousFrameBuffer;
 @property (nonatomic) BOOL hasPreviousFrame;
 @property (nonatomic, strong) dispatch_semaphore_t frameFence;
 ```
 
-**Frame Fence Synchronization (SSKParticleSystem.m:905-981):**
+**Frame Fence Synchronization:**
 ```objc
 - (void)advanceWithMetal:(NSTimeInterval)dt {
     // Wait on fence if async mode
@@ -176,7 +180,7 @@ typedef NS_ENUM(NSUInteger, SSKMetalSimulationRenderMode) {
 }
 ```
 
-**Snapshot Selection (SSKParticleSystem.m:1087-1119):**
+**Snapshot Selection:**
 ```objc
 - (NSArray<SSKParticle *> *)aliveParticlesSnapshot {
     SSKParticleState *sourceStates = self.states;
@@ -257,7 +261,7 @@ The frame fence ensures only 1 frame in flight:
 Instance buffer building happens on CPU every frame:
 
 ```objc
-// Old CPU-side approach (SSKMetalParticlePass.m:78-124)
+// Old CPU-side approach
 SSKMetalInstanceData *instances = self.instanceBuffer.contents;
 NSUInteger index = 0;
 for (SSKParticle *particle in particles) {
@@ -282,7 +286,7 @@ Move instance buffer building to GPU using a **compute shader + atomic counter +
 
 ### Implementation Details
 
-**Metal Shader Kernel (SSKParticleShaders.metal:344-401):**
+**Metal Shader Kernel:**
 ```metal
 kernel void buildInstanceData(device ParticleState *particles [[buffer(0)]],
                               device InstanceData *instances [[buffer(1)]],
@@ -326,7 +330,7 @@ kernel void buildInstanceData(device ParticleState *particles [[buffer(0)]],
 }
 ```
 
-**Indirect Rendering Setup (SSKMetalParticlePass.m:338-403):**
+**Indirect Rendering Setup:**
 ```objc
 - (void)setupIndirectRendering {
     // Create buildInstanceData compute pipeline
@@ -362,7 +366,7 @@ kernel void buildInstanceData(device ParticleState *particles [[buffer(0)]],
 }
 ```
 
-**Indirect Draw Execution (SSKMetalParticlePass.m:167-262):**
+**Indirect Draw Execution:**
 ```objc
 - (BOOL)encodeParticlesIndirect:(id<MTLBuffer>)particleBuffer
                        capacity:(NSUInteger)capacity
@@ -417,7 +421,7 @@ kernel void buildInstanceData(device ParticleState *particles [[buffer(0)]],
 }
 ```
 
-**Integration (SSKParticleSystem.m:1121-1151):**
+**Integration:**
 ```objc
 - (BOOL)renderWithMetalRenderer:(SSKMetalParticleRenderer *)renderer
                        blendMode:(SSKParticleBlendMode)blendMode
@@ -735,6 +739,42 @@ Command buffer complete ←──────── GPU done
 
 ---
 
+## Memory Leak Fixes (February 2025)
+
+In addition to the performance optimizations above, several memory leaks and resource management issues were identified and fixed that caused gradual performance degradation over time:
+
+### 1. Metal Encoder / Command Buffer Leak
+
+**Problem:** In `advanceWithMetal:`, when the alive particle count was zero, the method created a Metal command buffer and compute encoder but returned early without ending the encoder or committing the buffer. This leaked GPU resources every frame during idle periods and could deadlock the frame fence in async mode.
+
+**Fix:** The alive count check was moved *before* command buffer/encoder creation. When no particles are alive and async rendering is active, the frame fence is explicitly signaled to prevent deadlock.
+
+### 2. NSTimer Retain Cycle
+
+**Problem:** `SSKScreenSaverView` created a repeating `NSTimer` with `self` as the target. Since `NSTimer` retains its target, this created a retain cycle preventing the view from being deallocated.
+
+**Fix:** A lightweight `SSKTimerWeakProxy` class holds a weak reference to the view and forwards timer callbacks. The proxy automatically invalidates the timer if the target is deallocated.
+
+### 3. Strong Self in GPU Completion Handler
+
+**Problem:** `spawnParticlesGPU:parameters:` captured `self` strongly in a Metal command buffer completion handler, preventing deallocation while GPU work was in flight.
+
+**Fix:** Uses standard weak/strong dance pattern in the completion handler.
+
+### 4. NSNumber Boxing in Particle Index Tracking
+
+**Problem:** The particle alive-tracking system used `NSMutableArray<NSNumber *>` and `NSMutableDictionary<NSNumber *, NSNumber *>`, creating thousands of autoreleased `NSNumber` objects per frame during spawn/death cycles. This caused significant autorelease pool pressure and GC overhead.
+
+**Fix:** Replaced all Objective-C collection types with raw C arrays (`NSUInteger *`) and counters. See [Optimization 1](#optimization-1-alive-particle-tracking) above for the updated implementation.
+
+### 5. Unbounded Texture Cache Growth
+
+**Problem:** `SSKMetalTextureCache` could accumulate textures indefinitely if textures were released back to the cache faster than they were trimmed.
+
+**Fix:** Added automatic trimming in `releaseTexture:` when the cache exceeds 8 textures (`kSSKTextureCacheAutoTrimThreshold`).
+
+---
+
 ## Future Improvements
 
 Potential optimizations for future releases:
@@ -757,5 +797,5 @@ Potential optimizations for future releases:
 
 ---
 
-**Last Updated:** December 29, 2024
-**ScreenSaverKit Version:** Alpha (Post-Performance-Optimization)
+**Last Updated:** February 9, 2025
+**ScreenSaverKit Version:** Alpha (Post-Performance-Optimization + Memory Leak Fixes)

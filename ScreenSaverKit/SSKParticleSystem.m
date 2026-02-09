@@ -302,16 +302,21 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
 
 @end
 
-@interface SSKParticleSystem ()
+@interface SSKParticleSystem () {
+    // C-array based index tracking (avoids NSNumber boxing overhead).
+    // These replace the previous NSMutableArray<NSNumber *> / NSMutableDictionary
+    // approach which created thousands of short-lived NSNumber objects per frame.
+    NSUInteger *_freeStack;          // Stack of free particle indices
+    NSUInteger _freeStackCount;      // Number of entries in free stack
+    NSUInteger *_aliveList;          // Compact list of alive particle indices
+    NSUInteger _aliveListCount;      // Number of alive particles
+    NSUInteger *_alivePositionMap;   // Maps particle index -> position in _aliveList (NSNotFound = not alive)
+}
 @property (nonatomic, assign) NSUInteger capacity;
 @property (nonatomic, assign) SSKParticleState *states;
 @property (nonatomic, strong) NSMutableArray<SSKParticle *> *particles;
 @property (nonatomic, strong) NSMutableArray<SSKParticle *> *aliveScratch;
-@property (nonatomic, strong) NSMutableIndexSet *availableIndices; // Kept for compatibility, but optimized access
-@property (nonatomic, strong) NSMutableArray<NSNumber *> *freeIndicesStack; // Fast O(1) allocation
 @property (nonatomic, strong) dispatch_queue_t particleIndexQueue; // Serial queue for free list updates
-@property (nonatomic, strong) NSMutableArray<NSNumber *> *aliveIndicesArray; // Sparse array of alive particle indices
-@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSNumber *> *indexToAlivePosition; // Maps particle index to position in aliveIndicesArray
 @property (nonatomic, strong) id<MTLBuffer> previousFrameBuffer; // Buffer storing previous frame's particle data for async rendering
 @property (nonatomic) BOOL hasPreviousFrame; // Whether we have valid previous frame data
 @property (nonatomic, strong) dispatch_semaphore_t frameFence; // Semaphore ensuring only 1 frame in flight for async mode
@@ -336,16 +341,23 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     if ((self = [super init])) {
         _capacity = capacity;
         _particles = [NSMutableArray arrayWithCapacity:capacity];
-        _availableIndices = [NSMutableIndexSet indexSetWithIndexesInRange:NSMakeRange(0, capacity)];
-        // Phase 3: Optimized index management - use stack for O(1) allocation
-        _freeIndicesStack = [NSMutableArray arrayWithCapacity:capacity];
-        for (NSUInteger i = 0; i < capacity; i++) {
-            [_freeIndicesStack addObject:@(i)];
+        // C-array index tracking — zero NSNumber allocations in hot paths
+        _freeStack = (NSUInteger *)malloc(capacity * sizeof(NSUInteger));
+        _aliveList = (NSUInteger *)malloc(capacity * sizeof(NSUInteger));
+        _alivePositionMap = (NSUInteger *)malloc(capacity * sizeof(NSUInteger));
+        if (!_freeStack || !_aliveList || !_alivePositionMap) {
+            free(_freeStack);  _freeStack = NULL;
+            free(_aliveList);  _aliveList = NULL;
+            free(_alivePositionMap); _alivePositionMap = NULL;
+            return nil;
         }
+        _freeStackCount = capacity;
+        for (NSUInteger i = 0; i < capacity; i++) {
+            _freeStack[i] = i;
+            _alivePositionMap[i] = NSNotFound;
+        }
+        _aliveListCount = 0;
         _particleIndexQueue = dispatch_queue_create("com.ssk.particleIndex", DISPATCH_QUEUE_SERIAL);
-        // Alive particle tracking optimization
-        _aliveIndicesArray = [NSMutableArray arrayWithCapacity:MIN(capacity, (NSUInteger)1024)];
-        _indexToAlivePosition = [NSMutableDictionary dictionaryWithCapacity:MIN(capacity, (NSUInteger)1024)];
         _blendMode = SSKParticleBlendModeAlpha;
         _gravity = NSZeroPoint;
         _globalDamping = 0.0;
@@ -385,6 +397,9 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     if (!self.particleBuffer && self.states) {
         free(self.states);
     }
+    free(_freeStack);
+    free(_aliveList);
+    free(_alivePositionMap);
 }
 
 - (void)setUpMetalResourcesWithCapacity:(NSUInteger)capacity {
@@ -558,33 +573,23 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
 }
 
 - (NSUInteger)aliveParticleCount {
-    NSUInteger freeCount = self.freeIndicesStack.count;
-    if (freeCount > self.capacity) {
-        freeCount = self.capacity;
-    }
-    return self.capacity - freeCount;
+    return _aliveListCount;
 }
 
 - (void)spawnParticles:(NSUInteger)count initializer:(SSKParticleInitializer)initializer {
     if (count == 0 || !initializer) { return; }
-    
-    // Phase 1.1 & 3: Batch index collection using optimized stack-based free list
-    NSUInteger availableCount = self.freeIndicesStack.count;
-    NSUInteger actualCount = MIN(count, availableCount);
+
+    NSUInteger actualCount = MIN(count, _freeStackCount);
     if (actualCount == 0) { return; }
-    
+
     NSUInteger *indices = (NSUInteger *)malloc(actualCount * sizeof(NSUInteger));
     if (!indices) { return; }
-    
-    // Phase 3: O(1) allocation from stack
+
+    // O(1) allocation from stack — no NSNumber boxing
     NSUInteger collected = 0;
-    while (collected < actualCount && self.freeIndicesStack.count > 0) {
-        NSNumber *indexNum = [self.freeIndicesStack lastObject];
-        [self.freeIndicesStack removeLastObject];
-        NSUInteger index = [indexNum unsignedIntegerValue];
+    while (collected < actualCount && _freeStackCount > 0) {
+        NSUInteger index = _freeStack[--_freeStackCount];
         indices[collected++] = index;
-        // Keep availableIndices in sync for compatibility
-        [self.availableIndices removeIndex:index];
     }
     
     // Phase 1.4: Optimized state initialization - use direct struct manipulation
@@ -629,11 +634,12 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
             state->baseSize = state->size;
         }
 
-        // Add to alive tracking
-        [self.aliveIndicesArray addObject:@(idx)];
-        [self.indexToAlivePosition setObject:@(self.aliveIndicesArray.count - 1) forKey:@(idx)];
+        // Add to alive tracking — C array, zero allocations
+        _aliveList[_aliveListCount] = idx;
+        _alivePositionMap[idx] = _aliveListCount;
+        _aliveListCount++;
     }
-    
+
     // Phase 1.3: Batched dirty marking - single call for all modified particles
     if (minIndex != NSNotFound && self.particleBuffer) {
         NSUInteger stride = self.stateStride;
@@ -661,23 +667,17 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         return 0;
     }
     
-    // Phase 3: Collect available indices using optimized stack-based free list
-    NSUInteger availableCount = self.freeIndicesStack.count;
-    NSUInteger actualCount = MIN(count, availableCount);
+    NSUInteger actualCount = MIN(count, _freeStackCount);
     if (actualCount == 0) { return 0; }
-    
+
     NSUInteger *indices = (NSUInteger *)malloc(actualCount * sizeof(NSUInteger));
     if (!indices) { return 0; }
-    
-    // Phase 3: O(1) allocation from stack
+
+    // O(1) allocation from stack — no NSNumber boxing
     NSUInteger collected = 0;
-    while (collected < actualCount && self.freeIndicesStack.count > 0) {
-        NSNumber *indexNum = [self.freeIndicesStack lastObject];
-        [self.freeIndicesStack removeLastObject];
-        NSUInteger index = [indexNum unsignedIntegerValue];
+    while (collected < actualCount && _freeStackCount > 0) {
+        NSUInteger index = _freeStack[--_freeStackCount];
         indices[collected++] = index;
-        // Keep availableIndices in sync for compatibility
-        [self.availableIndices removeIndex:index];
     }
     
     // Create buffers for GPU initialization
@@ -794,9 +794,10 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         SSKParticle *particle = self.particles[idx];
         particle.state = &self.states[idx];
 
-        // Add to alive tracking
-        [self.aliveIndicesArray addObject:@(idx)];
-        [self.indexToAlivePosition setObject:@(self.aliveIndicesArray.count - 1) forKey:@(idx)];
+        // Add to alive tracking — C array, zero allocations
+        _aliveList[_aliveListCount] = idx;
+        _alivePositionMap[idx] = _aliveListCount;
+        _aliveListCount++;
 
         if (minIndex == NSNotFound || idx < minIndex) {
             minIndex = idx;
@@ -820,9 +821,12 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         }
     }
 
+    __weak typeof(self) weakSelfSpawn = self;
     [commandBuffer addCompletedHandler:^(__unused id<MTLCommandBuffer> buffer) {
-        if (!hasRange || !self.particleBuffer) { return; }
-        [self.particleBuffer didModifyRange:NSMakeRange(startOffset, rangeLength)];
+        __strong typeof(weakSelfSpawn) strongSelfSpawn = weakSelfSpawn;
+        if (!strongSelfSpawn) { return; }
+        if (!hasRange || !strongSelfSpawn.particleBuffer) { return; }
+        [strongSelfSpawn.particleBuffer didModifyRange:NSMakeRange(startOffset, rangeLength)];
     }];
 
     [commandBuffer commit];
@@ -854,11 +858,8 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         state->life += (float)dt;
         if (state->life >= state->maxLife) {
             state->alive = 0u;
-            // Remove from alive tracking
             [self removeFromAliveTracking:idx];
-            // Phase 3: O(1) deallocation to stack
-            [self.freeIndicesStack addObject:@(idx)];
-            [self.availableIndices addIndex:idx];
+            _freeStack[_freeStackCount++] = idx;
             continue;
         }
 
@@ -883,10 +884,8 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
 
         if (SSKShouldCullParticle(self, state->position)) {
             state->alive = 0u;
-            // Remove from alive tracking
             [self removeFromAliveTracking:idx];
-            [self.freeIndicesStack addObject:@(idx)];
-            [self.availableIndices addIndex:idx];
+            _freeStack[_freeStackCount++] = idx;
             continue;
         }
 
@@ -923,16 +922,22 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     uniforms->globalDamping = (float)self.globalDamping;
     uniforms->padding = 0.0f;
 
+    NSUInteger aliveCount = [self aliveParticleCount];
+    if (aliveCount == 0) {
+        // Signal frame fence so the next frame doesn't deadlock in PreviousFrame mode.
+        if (self.metalSimulationRenderMode == SSKMetalSimulationRenderModePreviousFrame &&
+            self.frameFence) {
+            dispatch_semaphore_signal(self.frameFence);
+        }
+        return;
+    }
+
     id<MTLCommandBuffer> commandBuffer = [self.commandQueue commandBuffer];
     id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
     [encoder setComputePipelineState:self.computePipeline];
     [encoder setBuffer:self.particleBuffer offset:0 atIndex:0];
     [encoder setBuffer:self.uniformsBuffer offset:0 atIndex:1];
 
-    NSUInteger aliveCount = [self aliveParticleCount];
-    if (aliveCount == 0) {
-        return;
-    }
     NSUInteger threadCount = aliveCount;
     NSUInteger threadWidth = MAX(self.computePipeline.threadExecutionWidth, (NSUInteger)1);
     NSUInteger maxThreads = MAX(self.computePipeline.maxTotalThreadsPerThreadgroup, (NSUInteger)1);
@@ -949,19 +954,17 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         __strong typeof(self) strongSelf = weakSelf;
         if (!strongSelf) { return; }
         dispatch_async(strongSelf.particleIndexQueue, ^{
-            // Only add indices that are dead AND not already in availableIndices
-            // This prevents duplicates when particles die, get reused, then die again
-            for (NSUInteger idx = 0; idx < strongSelf.capacity; idx++) {
+            // Iterate only alive particles (O(alive) instead of O(capacity)).
+            // Walk backwards so swap-removal doesn't skip entries.
+            for (NSUInteger i = strongSelf->_aliveListCount; i > 0; i--) {
+                NSUInteger idx = strongSelf->_aliveList[i - 1];
                 SSKParticleState *state = &strongSelf.states[idx];
                 if (SSKShouldCullParticle(strongSelf, state->position)) {
                     state->alive = 0u;
                 }
-                if (!state->alive && ![strongSelf.availableIndices containsIndex:idx]) {
-                    // Remove from alive tracking
+                if (!state->alive) {
                     [strongSelf removeFromAliveTracking:idx];
-                    // Phase 3: O(1) deallocation to stack - only add newly dead particles
-                    [strongSelf.freeIndicesStack addObject:@(idx)];
-                    [strongSelf.availableIndices addIndex:idx];
+                    strongSelf->_freeStack[strongSelf->_freeStackCount++] = idx;
                 }
             }
 
@@ -1072,16 +1075,13 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         state->baseColor = (vector_float4){1,1,1,1};
         state->sizeRange = (vector_float2){1,1};
     }
-    // Phase 3: Reset free indices stack
-    [self.freeIndicesStack removeAllObjects];
+    // Reset index tracking — C arrays, zero allocations
+    _freeStackCount = self.capacity;
     for (NSUInteger i = 0; i < self.capacity; i++) {
-        [self.freeIndicesStack addObject:@(i)];
+        _freeStack[i] = i;
+        _alivePositionMap[i] = NSNotFound;
     }
-    [self.availableIndices removeAllIndexes];
-    [self.availableIndices addIndexesInRange:NSMakeRange(0, self.capacity)];
-    // Reset alive tracking
-    [self.aliveIndicesArray removeAllObjects];
-    [self.indexToAlivePosition removeAllObjects];
+    _aliveListCount = 0;
     [self markAllStatesDirty];
 }
 
@@ -1103,14 +1103,12 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         sourceStates = (SSKParticleState *)self.previousFrameBuffer.contents;
     }
 
-    // Optimized: iterate only alive indices instead of all capacity
-    for (NSNumber *indexNum in self.aliveIndicesArray) {
-        NSUInteger idx = [indexNum unsignedIntegerValue];
+    // Iterate alive indices via C array — no NSNumber unboxing
+    for (NSUInteger i = 0; i < _aliveListCount; i++) {
+        NSUInteger idx = _aliveList[i];
         if (sourceStates == self.states) {
-            // Using current frame data - use existing particle wrappers
             [alive addObject:self.particles[idx]];
         } else {
-            // Using previous frame data - create temporary particle wrapper
             SSKParticle *particle = [[SSKParticle alloc] initWithState:&sourceStates[idx] index:idx];
             [alive addObject:particle];
         }
@@ -1173,22 +1171,19 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
 }
 
 - (void)removeFromAliveTracking:(NSUInteger)index {
-    NSNumber *indexNum = @(index);
-    NSNumber *positionNum = [self.indexToAlivePosition objectForKey:indexNum];
-    if (!positionNum) { return; }
+    NSUInteger position = _alivePositionMap[index];
+    if (position == NSNotFound) { return; }
 
-    NSUInteger position = [positionNum unsignedIntegerValue];
-    NSUInteger lastPos = self.aliveIndicesArray.count - 1;
-
+    NSUInteger lastPos = _aliveListCount - 1;
     if (position != lastPos) {
-        // Swap with last element for O(1) removal
-        NSNumber *lastIndex = self.aliveIndicesArray[lastPos];
-        self.aliveIndicesArray[position] = lastIndex;
-        self.indexToAlivePosition[lastIndex] = @(position);
+        // Swap with last element for O(1) removal — zero allocations
+        NSUInteger lastIndex = _aliveList[lastPos];
+        _aliveList[position] = lastIndex;
+        _alivePositionMap[lastIndex] = position;
     }
 
-    [self.aliveIndicesArray removeLastObject];
-    [self.indexToAlivePosition removeObjectForKey:indexNum];
+    _aliveListCount--;
+    _alivePositionMap[index] = NSNotFound;
 }
 
 - (void)releaseMetalResources {

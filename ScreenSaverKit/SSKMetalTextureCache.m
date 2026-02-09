@@ -13,6 +13,9 @@ static inline NSNumber *SSKTextureCacheKey(NSUInteger width,
     return @(key);
 }
 
+/// Automatic trim threshold — prevents unbounded GPU memory growth from stale textures.
+static const NSUInteger kSSKTextureCacheAutoTrimThreshold = 8;
+
 @interface SSKMetalTextureCache ()
 @property (nonatomic, strong) id<MTLDevice> device;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSHashTable<id<MTLTexture>> *> *textureBuckets;
@@ -88,6 +91,13 @@ static inline NSNumber *SSKTextureCacheKey(NSUInteger width,
     }
     [bucket addObject:texture];
     [self.allTexturesInInsertionOrder addObject:texture];
+
+    // Auto-trim: evict oldest cached textures when the pool grows too large.
+    // This prevents unbounded GPU memory growth after display configuration
+    // changes (where stale textures of the old size accumulate).
+    if (self.allTexturesInInsertionOrder.count > kSSKTextureCacheAutoTrimThreshold) {
+        [self trimToSize:kSSKTextureCacheAutoTrimThreshold];
+    }
 }
 
 - (void)clearCache {
