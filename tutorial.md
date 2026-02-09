@@ -198,7 +198,7 @@ Now that you've seen it running, let's dive into the code to understand the key 
 - Once during initialization (with all default keys)
 - Whenever the user changes a preference (with only the changed keys)
 
-**Behind the scenes:** ScreenSaverKit polls `NSUserDefaults` every 0.5 seconds. The demo also calls `refreshPreferencesIfNeeded` in `animateOneFrame` for instant updates during testing.
+**Behind the scenes:** ScreenSaverKit polls `NSUserDefaults` every 2 seconds. The demo also calls `refreshPreferencesIfNeeded` in `animateOneFrame` for instant updates during testing.
 
 **How to use:** Extract values from the `prefs` dictionary and update your animation state. The demo delegates to `applyPreferencesDictionary:` which updates instance variables like `_speed` and `_colorCycling`.
 

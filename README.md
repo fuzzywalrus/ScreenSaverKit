@@ -520,7 +520,7 @@ Or use the full install-and-refresh workflow:
 
 **Symptoms:** Changes in System Settings don't appear until restarting preview.
 
-**Solution:** The kit polls preferences every 0.5 seconds. Changes should appear automatically. If not:
+**Solution:** The kit polls preferences every 2 seconds. Changes should appear automatically. If not:
 1. Verify you implemented `preferencesDidChange:changedKeys:`
 2. Check that `defaultPreferences` returns the correct keys
 3. Ensure you're not caching values that should update
