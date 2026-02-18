@@ -53,6 +53,8 @@
 @implementation SSKMetalSpritePass {
     NSUInteger *_visibleIndices;
     NSUInteger _visibleIndicesCapacity;
+    float *_zValues;
+    NSUInteger _zValuesCapacity;
 }
 
 @synthesize samplerFilter = _samplerFilter;
@@ -63,6 +65,7 @@
 
 - (void)dealloc {
     free(_visibleIndices);
+    free(_zValues);
 }
 
 #pragma mark - Culling and Sorting
@@ -175,26 +178,30 @@
  */
 - (void)sortVisibleIndices:(NSUInteger)visibleCount sprites:(NSArray<SSKSprite *> *)sprites {
     if (visibleCount <= 1) return;
-    
-    NSArray<SSKSprite *> *spriteArray = sprites;
+
+    // Pre-extract z values into a C float array to avoid ObjC messaging per comparison.
+    NSUInteger spriteCount = sprites.count;
+    if (spriteCount > _zValuesCapacity) {
+        free(_zValues);
+        _zValuesCapacity = spriteCount;
+        _zValues = (float *)malloc(_zValuesCapacity * sizeof(float));
+    }
+    for (NSUInteger i = 0; i < visibleCount; i++) {
+        NSUInteger idx = _visibleIndices[i];
+        float z = ((SSKSprite *)sprites[idx]).z;
+        _zValues[idx] = isfinite(z) ? z : 0.0f;
+    }
+
+    float *zValues = _zValues;
     qsort_b(_visibleIndices, visibleCount, sizeof(NSUInteger), ^int(const void *a, const void *b) {
         NSUInteger idxA = *(const NSUInteger *)a;
         NSUInteger idxB = *(const NSUInteger *)b;
-        
-        // Explicit cast to avoid ambiguity (NSArray subscript returns id)
-        SSKSprite *sA = spriteArray[idxA];
-        SSKSprite *sB = spriteArray[idxB];
-        float zA = sA.z;
-        float zB = sB.z;
-        
-        // Handle non-finite values (NaN, infinity): treat as 0
-        if (!isfinite(zA)) zA = 0.0f;
-        if (!isfinite(zB)) zB = 0.0f;
-        
-        // Compare z values
+        float zA = zValues[idxA];
+        float zB = zValues[idxB];
+
         if (zA < zB) return -1;
         if (zA > zB) return 1;
-        
+
         // Equal z: preserve original order via index tie-break
         if (idxA < idxB) return -1;
         if (idxA > idxB) return 1;

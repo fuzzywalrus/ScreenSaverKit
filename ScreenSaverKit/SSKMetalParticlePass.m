@@ -6,6 +6,14 @@
 
 #import "SSKDiagnostics.h"
 
+// userScalar mode thresholds — must match constants in SSKParticleShaders.metal buildInstanceData kernel.
+// Values > kSSKUserScalarDirectMultiplierThreshold encode a direct length multiplier (no z-depth).
+// Values in [kSSKUserScalarZDepthMin, kSSKUserScalarZDepthMax] encode z-depth factor.
+static const float kSSKUserScalarDirectMultiplierThreshold = 10.0f;
+static const float kSSKUserScalarZDepthMin = 0.1f;
+static const float kSSKUserScalarZDepthMax = 1.0f;
+static const float kSSKDefaultLengthMultiplier = 8.0f;
+
 typedef struct {
     vector_float2 position;
     vector_float2 direction;
@@ -101,32 +109,24 @@ typedef struct {
         float width = MAX(1.0f, (float)particle.size);
         data.width = width;
         
-        // Calculate length from userScalar
-        // If userScalar > 10.0, it's a length multiplier (no z-depth): length = width * (userScalar - 10.0)
-        // If userScalar <= 1.0, it's z-depth (0.1-1.0): length = width * lengthMultiplier * userScalar
-        // Default length multiplier is 8.0 if we can't determine it
+        // Calculate length from userScalar (see mode constants above)
         float userScalar = (float)particle.userScalar;
-        float lengthMultiplier = 8.0f; // Default
+        float lengthMultiplier = kSSKDefaultLengthMultiplier;
         float zDepth = 1.0f;
-        
-        if (userScalar > 10.0f) {
-            // No z-depth: userScalar contains length multiplier
-            lengthMultiplier = userScalar - 10.0f;
+
+        if (userScalar > kSSKUserScalarDirectMultiplierThreshold) {
+            lengthMultiplier = userScalar - kSSKUserScalarDirectMultiplierThreshold;
             data.length = width * lengthMultiplier;
-        } else if (userScalar >= 0.1f && userScalar <= 1.0f) {
-            // Z-depth enabled: userScalar contains z-depth
+        } else if (userScalar >= kSSKUserScalarZDepthMin && userScalar <= kSSKUserScalarZDepthMax) {
             zDepth = userScalar;
-            // Use the length multiplier from the render pass property
             lengthMultiplier = (float)self.lengthMultiplier;
-            data.length = width * lengthMultiplier * zDepth; // Further drops are shorter
+            data.length = width * lengthMultiplier * zDepth;
         } else {
-            // Fallback: use default
             data.length = width * lengthMultiplier;
         }
-        
+
         data.color = [particle metalColorVector];
-        // Use userScalar as softness only if it's not z-depth (z-depth uses 0 for hard edges)
-        float softness = (userScalar > 10.0f || userScalar < 0.1f) ? userScalar : 0.0f;
+        float softness = (userScalar > kSSKUserScalarDirectMultiplierThreshold || userScalar < kSSKUserScalarZDepthMin) ? userScalar : 0.0f;
         if (!isfinite(softness) || softness < 0.0f) {
             softness = 0.0f;
         }

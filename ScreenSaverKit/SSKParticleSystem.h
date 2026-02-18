@@ -1,4 +1,5 @@
 #import <AppKit/AppKit.h>
+#import <Metal/Metal.h>
 #import <simd/simd.h>
 
 NS_ASSUME_NONNULL_BEGIN
@@ -133,7 +134,8 @@ typedef void (^SSKParticleRenderer)(CGContextRef ctx, SSKParticle *particle);
 /// Lightweight particle system supporting additive and standard blending.
 @interface SSKParticleSystem : NSObject
 
-- (instancetype)initWithCapacity:(NSUInteger)capacity NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithCapacity:(NSUInteger)capacity device:(nullable id<MTLDevice>)device NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithCapacity:(NSUInteger)capacity;
 - (instancetype)init NS_UNAVAILABLE;
 
 /// Blend mode used when rendering.

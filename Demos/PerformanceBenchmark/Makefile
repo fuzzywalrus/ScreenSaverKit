@@ -40,6 +40,7 @@ SOURCES := \
 	$(KIT_SOURCE_DIR)/SSKScreenUtilities.m \
 	$(KIT_SOURCE_DIR)/SSKDiagnostics.m \
 	$(KIT_SOURCE_DIR)/SSKParticleSystem.m \
+	$(KIT_SOURCE_DIR)/SSKShaderLoader.m \
 	$(KIT_SOURCE_DIR)/SSKMetalParticleRenderer.m \
 	$(KIT_SOURCE_DIR)/SSKMetalRenderer.m \
 	$(KIT_SOURCE_DIR)/SSKMetalScreenSaverView.m \

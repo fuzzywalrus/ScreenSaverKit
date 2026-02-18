@@ -341,6 +341,12 @@ kernel void bloomCompositeKernel(texture2d<float, access::sample> bloomTex [[tex
 
 // --- GPU-side instance buffer building for indirect rendering ---
 
+// userScalar mode thresholds — must match constants in SSKMetalParticlePass.m.
+constant float kUserScalarDirectMultiplierThreshold = 10.0f;
+constant float kUserScalarZDepthMin = 0.1f;
+constant float kUserScalarZDepthMax = 1.0f;
+constant float kDefaultLengthMultiplier = 8.0f;
+
 kernel void buildInstanceData(device ParticleState *particles [[buffer(0)]],
                               device InstanceData *instances [[buffer(1)]],
                               device atomic_uint *counter [[buffer(2)]],
@@ -372,26 +378,22 @@ kernel void buildInstanceData(device ParticleState *particles [[buffer(0)]],
     float width = max(1.0f, state.size);
     data.width = width;
 
-    // Length calculation - three modes based on userScalar
+    // Length calculation - three modes based on userScalar (see threshold constants above)
     float userScalar = state.userScalar;
-    if (userScalar > 10.0f) {
-        // Mode 1: Direct multiplier (no z-depth)
-        float lengthMultiplier = userScalar - 10.0f;
+    if (userScalar > kUserScalarDirectMultiplierThreshold) {
+        float lengthMultiplier = userScalar - kUserScalarDirectMultiplierThreshold;
         data.length = width * lengthMultiplier;
-    } else if (userScalar >= 0.1f && userScalar <= 1.0f) {
-        // Mode 2: Z-depth factor (for rain with perspective)
+    } else if (userScalar >= kUserScalarZDepthMin && userScalar <= kUserScalarZDepthMax) {
         float zDepth = userScalar;
-        float lengthMultiplier = 8.0f; // Default length multiplier
-        data.length = width * lengthMultiplier * zDepth;
+        data.length = width * kDefaultLengthMultiplier * zDepth;
     } else {
-        // Mode 3: Default
-        data.length = width * 8.0f;
+        data.length = width * kDefaultLengthMultiplier;
     }
 
     data.color = state.color;
 
     // Softness (edge blur) - only for non-z-depth particles
-    float softness = (userScalar > 10.0f || userScalar < 0.1f) ? userScalar : 0.0f;
+    float softness = (userScalar > kUserScalarDirectMultiplierThreshold || userScalar < kUserScalarZDepthMin) ? userScalar : 0.0f;
     if (!isfinite(softness) || softness < 0.0f) {
         softness = 0.0f;
     }

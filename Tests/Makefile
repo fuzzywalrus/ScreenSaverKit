@@ -48,7 +48,8 @@ KIT_SOURCES := \
 	$(KIT_SOURCE_DIR)/SSKAnimationClock.m \
 	$(KIT_SOURCE_DIR)/SSKScreenUtilities.m \
 	$(KIT_SOURCE_DIR)/SSKEntityPool.m \
-	$(KIT_SOURCE_DIR)/SSKAssetManager.m
+	$(KIT_SOURCE_DIR)/SSKAssetManager.m \
+	$(KIT_SOURCE_DIR)/SSKShaderLoader.m
 
 .PHONY: all clean test
 

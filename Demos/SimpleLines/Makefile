@@ -33,7 +33,8 @@ SOURCES := \
 	$(KIT_SOURCE_DIR)/SSKColorPalette.m \
 	$(KIT_SOURCE_DIR)/SSKPaletteManager.m \
 	$(KIT_SOURCE_DIR)/SSKColorUtilities.m \
-	$(KIT_SOURCE_DIR)/SSKParticleSystem.m
+	$(KIT_SOURCE_DIR)/SSKParticleSystem.m \
+	$(KIT_SOURCE_DIR)/SSKShaderLoader.m
 
 INFO_PLIST := $(CURRENT_DIR)/Info.plist
 EXECUTABLE := $(MACOS_DIR)/$(SCREENSAVER_NAME)

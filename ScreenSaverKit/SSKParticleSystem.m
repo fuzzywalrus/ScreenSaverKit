@@ -4,8 +4,10 @@
 #import <simd/simd.h>
 #import <math.h>
 
+#import "SSKDiagnostics.h"
 #import "SSKMetalParticleRenderer.h"
 #import "SSKMetalRenderer.h"
+#import "SSKShaderLoader.h"
 #import "SSKVectorMath.h"
 
 // Behaviour flag values mirrored in the Metal shader.
@@ -37,7 +39,7 @@ typedef struct {
     vector_float2 gravity;
     float dt;
     float globalDamping;
-    float padding;
+    uint32_t particleCount;
 } SSKParticleSimulationUniforms;
 
 static inline BOOL SSKShouldCullParticle(const SSKParticleSystem *system, vector_float2 position) {
@@ -76,13 +78,14 @@ static NSString * const kSSKParticleComputeTemplate =
 "    float2 gravity;\\n"
 "    float dt;\\n"
 "    float globalDamping;\\n"
-"    float padding;\\n"
+"    uint particleCount;\\n"
 "};\\n"
 "constant uint kBehaviorFadeAlpha = %u;\\n"
 "constant uint kBehaviorFadeSize  = %u;\\n"
 "kernel void simulateParticles(device ParticleState *particles [[buffer(0)]],\\n"
 "                             constant SimulationUniforms &uniforms [[buffer(1)]],\\n"
 "                             uint id [[thread_position_in_grid]]) {\\n"
+"    if (id >= uniforms.particleCount) { return; }\\n"
 "    ParticleState state = particles[id];\\n"
 "    if (state.alive == 0u) { return; }\\n"
 "    float dt = uniforms.dt;\\n"
@@ -311,6 +314,9 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     NSUInteger *_aliveList;          // Compact list of alive particle indices
     NSUInteger _aliveListCount;      // Number of alive particles
     NSUInteger *_alivePositionMap;   // Maps particle index -> position in _aliveList (NSNotFound = not alive)
+    NSUInteger *_spawnIndexScratch;  // Reused scratch storage for spawn index collection
+    id<MTLDevice> _externalDevice;   // Optional device passed via initWithCapacity:device:
+    NSMutableArray<SSKParticle *> *_previousFramePool; // Reusable particle objects for previous-frame snapshots
 }
 @property (nonatomic, assign) NSUInteger capacity;
 @property (nonatomic, assign) SSKParticleState *states;
@@ -326,6 +332,9 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
 @property (nonatomic, strong) id<MTLComputePipelineState> initializePipeline;
 @property (nonatomic, strong) id<MTLBuffer> particleBuffer;
 @property (nonatomic, strong) id<MTLBuffer> uniformsBuffer;
+@property (nonatomic, strong) id<MTLBuffer> spawnIndicesBuffer;
+@property (nonatomic, strong) id<MTLBuffer> spawnParamsBuffer;
+@property (nonatomic, strong) id<MTLBuffer> spawnCountBuffer;
 @property (nonatomic, strong) id<MTLLibrary> shaderLibrary;
 @property (nonatomic) BOOL supportsMetalSimulation;
 @property (nonatomic) BOOL updateHandlerForcesCPU;
@@ -337,18 +346,25 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
 @implementation SSKParticleSystem
 
 - (instancetype)initWithCapacity:(NSUInteger)capacity {
+    return [self initWithCapacity:capacity device:nil];
+}
+
+- (instancetype)initWithCapacity:(NSUInteger)capacity device:(id<MTLDevice>)device {
     NSParameterAssert(capacity > 0);
     if ((self = [super init])) {
         _capacity = capacity;
+        _externalDevice = device;
         _particles = [NSMutableArray arrayWithCapacity:capacity];
         // C-array index tracking — zero NSNumber allocations in hot paths
         _freeStack = (NSUInteger *)malloc(capacity * sizeof(NSUInteger));
         _aliveList = (NSUInteger *)malloc(capacity * sizeof(NSUInteger));
         _alivePositionMap = (NSUInteger *)malloc(capacity * sizeof(NSUInteger));
-        if (!_freeStack || !_aliveList || !_alivePositionMap) {
+        _spawnIndexScratch = (NSUInteger *)malloc(capacity * sizeof(NSUInteger));
+        if (!_freeStack || !_aliveList || !_alivePositionMap || !_spawnIndexScratch) {
             free(_freeStack);  _freeStack = NULL;
             free(_aliveList);  _aliveList = NULL;
             free(_alivePositionMap); _alivePositionMap = NULL;
+            free(_spawnIndexScratch); _spawnIndexScratch = NULL;
             return nil;
         }
         _freeStackCount = capacity;
@@ -400,68 +416,29 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     free(_freeStack);
     free(_aliveList);
     free(_alivePositionMap);
+    free(_spawnIndexScratch);
 }
 
 - (void)setUpMetalResourcesWithCapacity:(NSUInteger)capacity {
-    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    id<MTLDevice> device = _externalDevice ?: MTLCreateSystemDefaultDevice();
     if (!device) {
-        NSLog(@"SSKParticleSystem: no Metal device available; using CPU path.");
+        [SSKDiagnostics log:@"SSKParticleSystem: no Metal device available; using CPU path."];
         return;
     }
 
     id<MTLCommandQueue> queue = [device newCommandQueue];
     if (!queue) {
-        NSLog(@"SSKParticleSystem: failed to create Metal command queue; using CPU path.");
+        [SSKDiagnostics log:@"SSKParticleSystem: failed to create Metal command queue; using CPU path."];
         return;
     }
 
     NSError *error = nil;
-    
-    // Try to load from bundle first (for initializeParticles kernel)
-    id<MTLLibrary> library = nil;
-    NSBundle *bundle = [NSBundle bundleForClass:self.class];
-    NSString *metallibPath = [bundle pathForResource:@"SSKParticleShaders" ofType:@"metallib"];
-    if (metallibPath.length > 0) {
-        NSURL *metallibURL = [NSURL fileURLWithPath:metallibPath];
-        library = [device newLibraryWithURL:metallibURL error:&error];
-    }
-    
-    // Fallback: compile full shader source if metallib missing
-    if (!library) {
-        NSString *metalSourcePath = [bundle pathForResource:@"SSKParticleShaders" ofType:@"metal"];
-        if (!metalSourcePath) {
-            // Walk upwards and check current directory for source (common in tests/demos)
-            NSString *probe = bundle.bundlePath;
-            for (NSUInteger i = 0; i < 5 && probe.length > 1; i++) {
-                NSString *candidate = [probe stringByAppendingPathComponent:@"ScreenSaverKit/Shaders/SSKParticleShaders.metal"];
-                if ([[NSFileManager defaultManager] fileExistsAtPath:candidate]) {
-                    metalSourcePath = candidate;
-                    break;
-                }
-                probe = [probe stringByDeletingLastPathComponent];
-            }
-            if (!metalSourcePath) {
-                NSString *cwd = [[NSFileManager defaultManager] currentDirectoryPath];
-                NSString *candidate = [cwd stringByAppendingPathComponent:@"ScreenSaverKit/Shaders/SSKParticleShaders.metal"];
-                if ([[NSFileManager defaultManager] fileExistsAtPath:candidate]) {
-                    metalSourcePath = candidate;
-                }
-            }
-        }
-        if (metalSourcePath.length > 0) {
-            NSError *readError = nil;
-            NSString *source = [NSString stringWithContentsOfFile:metalSourcePath encoding:NSUTF8StringEncoding error:&readError];
-            if (!source) {
-                NSLog(@"SSKParticleSystem: failed to read Metal source at %@ (%@).", metalSourcePath, readError.localizedDescription ?: @"unknown error");
-            } else {
-                library = [device newLibraryWithSource:source options:nil error:&error];
-                if (!library) {
-                    NSLog(@"SSKParticleSystem: failed to compile Metal source at %@ (%@).", metalSourcePath, error.localizedDescription ?: @"unknown error");
-                }
-            }
-        }
-    }
-    
+
+    // Load shader library via SSKShaderLoader (metallib → source fallback chain).
+    id<MTLLibrary> library = [SSKShaderLoader loadLibraryNamed:@"SSKParticleShaders"
+                                                        device:device
+                                                        bundle:[NSBundle bundleForClass:self.class]];
+
     // Fallback to template for simulateParticles only if nothing else worked
     if (!library) {
         NSString *source = [NSString stringWithFormat:kSSKParticleComputeTemplate,
@@ -469,7 +446,7 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
                             kSSKParticleBehaviorFadeSize];
         library = [device newLibraryWithSource:source options:nil error:&error];
         if (!library) {
-            NSLog(@"SSKParticleSystem: failed to compile Metal compute shaders: %@", error);
+            [SSKDiagnostics log:@"SSKParticleSystem: failed to compile Metal compute shaders: %@", error];
             return;
         }
     }
@@ -483,20 +460,20 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         NSError *compileError = nil;
         id<MTLLibrary> fallbackLibrary = [device newLibraryWithSource:source options:nil error:&compileError];
         if (!fallbackLibrary) {
-            NSLog(@"SSKParticleSystem: simulateParticles kernel missing and fallback compile failed: %@", compileError);
+            [SSKDiagnostics log:@"SSKParticleSystem: simulateParticles kernel missing and fallback compile failed: %@", compileError];
             return;
         }
         library = fallbackLibrary;
         kernel = [library newFunctionWithName:@"simulateParticles"];
         if (!kernel) {
-            NSLog(@"SSKParticleSystem: simulateParticles kernel missing after fallback compile; using CPU path.");
+            [SSKDiagnostics log:@"SSKParticleSystem: simulateParticles kernel missing after fallback compile; using CPU path."];
             return;
         }
     }
 
     id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:kernel error:&error];
     if (!pipeline) {
-        NSLog(@"SSKParticleSystem: failed to create compute pipeline: %@", error);
+        [SSKDiagnostics log:@"SSKParticleSystem: failed to create compute pipeline: %@", error];
         return;
     }
     
@@ -506,21 +483,23 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     if (initKernel) {
         initPipeline = [device newComputePipelineStateWithFunction:initKernel error:&error];
         if (!initPipeline) {
-            NSLog(@"SSKParticleSystem: failed to create initialization pipeline: %@", error);
+            if ([SSKDiagnostics isEnabled]) {
+                [SSKDiagnostics log:@"SSKParticleSystem: failed to create initialization pipeline: %@", error];
+            }
         }
     }
 
     id<MTLBuffer> particleBuffer = [device newBufferWithLength:capacity * sizeof(SSKParticleState)
                                                        options:MTLResourceStorageModeShared];
     if (!particleBuffer) {
-        NSLog(@"SSKParticleSystem: failed to create particle buffer; using CPU path.");
+        [SSKDiagnostics log:@"SSKParticleSystem: failed to create particle buffer; using CPU path."];
         return;
     }
 
     id<MTLBuffer> uniformsBuffer = [device newBufferWithLength:sizeof(SSKParticleSimulationUniforms)
                                                        options:MTLResourceStorageModeShared];
     if (!uniformsBuffer) {
-        NSLog(@"SSKParticleSystem: failed to create uniforms buffer; using CPU path.");
+        [SSKDiagnostics log:@"SSKParticleSystem: failed to create uniforms buffer; using CPU path."];
         return;
     }
 
@@ -528,7 +507,9 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     id<MTLBuffer> previousFrameBuffer = [device newBufferWithLength:capacity * sizeof(SSKParticleState)
                                                             options:MTLResourceStorageModeShared];
     if (!previousFrameBuffer) {
-        NSLog(@"SSKParticleSystem: failed to create previous frame buffer; async rendering unavailable.");
+        if ([SSKDiagnostics isEnabled]) {
+            [SSKDiagnostics log:@"SSKParticleSystem: failed to create previous frame buffer; async rendering unavailable."];
+        }
     }
 
     self.metalDevice = device;
@@ -582,7 +563,7 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     NSUInteger actualCount = MIN(count, _freeStackCount);
     if (actualCount == 0) { return; }
 
-    NSUInteger *indices = (NSUInteger *)malloc(actualCount * sizeof(NSUInteger));
+    NSUInteger *indices = _spawnIndexScratch;
     if (!indices) { return; }
 
     // O(1) allocation from stack — no NSNumber boxing
@@ -591,7 +572,8 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         NSUInteger index = _freeStack[--_freeStackCount];
         indices[collected++] = index;
     }
-    
+    if (collected == 0) { return; }
+
     // Phase 1.4: Optimized state initialization - use direct struct manipulation
     // Default particle state template
     SSKParticleState defaultState = {0};
@@ -655,7 +637,6 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         }
     }
     
-    free(indices);
 }
 
 - (NSUInteger)spawnParticlesGPU:(NSUInteger)count parameters:(SSKParticleSpawnParameters)parameters {
@@ -670,24 +651,41 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     NSUInteger actualCount = MIN(count, _freeStackCount);
     if (actualCount == 0) { return 0; }
 
-    NSUInteger *indices = (NSUInteger *)malloc(actualCount * sizeof(NSUInteger));
+    NSUInteger *indices = _spawnIndexScratch;
     if (!indices) { return 0; }
 
     // O(1) allocation from stack — no NSNumber boxing
-    NSUInteger collected = 0;
+    __block NSUInteger collected = 0;
     while (collected < actualCount && _freeStackCount > 0) {
         NSUInteger index = _freeStack[--_freeStackCount];
         indices[collected++] = index;
     }
+    if (collected == 0) { return 0; }
+
+    void (^rollbackAllocation)(void) = ^{
+        while (collected > 0) {
+            NSUInteger idx = indices[--collected];
+            _freeStack[_freeStackCount++] = idx;
+        }
+    };
     
-    // Create buffers for GPU initialization
-    NSUInteger indicesBufferSize = actualCount * sizeof(uint32_t);
-    id<MTLBuffer> indicesBuffer = [self.metalDevice newBufferWithBytes:indices
-                                                                 length:indicesBufferSize
-                                                                options:MTLResourceStorageModeShared];
+    // Create/reuse buffers for GPU initialization
+    NSUInteger indicesBufferSize = collected * sizeof(uint32_t);
+    id<MTLBuffer> indicesBuffer = self.spawnIndicesBuffer;
+    if (!indicesBuffer || indicesBuffer.length < indicesBufferSize) {
+        indicesBuffer = [self.metalDevice newBufferWithLength:indicesBufferSize
+                                                      options:MTLResourceStorageModeShared];
+        if (indicesBuffer) {
+            self.spawnIndicesBuffer = indicesBuffer;
+        }
+    }
     if (!indicesBuffer) {
-        free(indices);
+        rollbackAllocation();
         return 0;
+    }
+    uint32_t *gpuIndices = (uint32_t *)indicesBuffer.contents;
+    for (NSUInteger i = 0; i < collected; i++) {
+        gpuIndices[i] = (uint32_t)indices[i];
     }
     
     // Convert parameters to Metal-compatible struct (must match shader struct layout exactly)
@@ -745,27 +743,39 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         self.lengthMultiplier = clampedLengthMult;
     }
     
-    id<MTLBuffer> paramsBuffer = [self.metalDevice newBufferWithBytes:&metalParams
-                                                                length:sizeof(MetalSpawnParameters)
-                                                               options:MTLResourceStorageModeShared];
+    id<MTLBuffer> paramsBuffer = self.spawnParamsBuffer;
     if (!paramsBuffer) {
-        free(indices);
+        paramsBuffer = [self.metalDevice newBufferWithLength:sizeof(MetalSpawnParameters)
+                                                     options:MTLResourceStorageModeShared];
+        if (paramsBuffer) {
+            self.spawnParamsBuffer = paramsBuffer;
+        }
+    }
+    if (!paramsBuffer) {
+        rollbackAllocation();
         return 0;
     }
+    memcpy(paramsBuffer.contents, &metalParams, sizeof(MetalSpawnParameters));
     
-    uint32_t countValue = (uint32_t)actualCount;
-    id<MTLBuffer> countBuffer = [self.metalDevice newBufferWithBytes:&countValue
-                                                               length:sizeof(uint32_t)
-                                                              options:MTLResourceStorageModeShared];
+    uint32_t countValue = (uint32_t)collected;
+    id<MTLBuffer> countBuffer = self.spawnCountBuffer;
     if (!countBuffer) {
-        free(indices);
+        countBuffer = [self.metalDevice newBufferWithLength:sizeof(uint32_t)
+                                                    options:MTLResourceStorageModeShared];
+        if (countBuffer) {
+            self.spawnCountBuffer = countBuffer;
+        }
+    }
+    if (!countBuffer) {
+        rollbackAllocation();
         return 0;
     }
+    *((uint32_t *)countBuffer.contents) = countValue;
     
     // Dispatch compute shader
     id<MTLCommandBuffer> commandBuffer = [self.commandQueue commandBuffer];
     if (!commandBuffer) {
-        free(indices);
+        rollbackAllocation();
         return 0;
     }
     
@@ -780,7 +790,7 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     NSUInteger maxThreads = MAX(self.initializePipeline.maxTotalThreadsPerThreadgroup, (NSUInteger)1);
     NSUInteger threadGroupSize = MIN(maxThreads, threadWidth * 8); // heuristic multiple of SIMD width
     threadGroupSize = MAX(threadGroupSize, (NSUInteger)1);
-    NSUInteger threadGroups = (actualCount + threadGroupSize - 1) / threadGroupSize;
+    NSUInteger threadGroups = (collected + threadGroupSize - 1) / threadGroupSize;
     MTLSize threadsPerGroup = MTLSizeMake(threadGroupSize, 1, 1);
     MTLSize threadgroupCount = MTLSizeMake(threadGroups, 1, 1);
     [encoder dispatchThreadgroups:threadgroupCount threadsPerThreadgroup:threadsPerGroup];
@@ -834,7 +844,6 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         [commandBuffer waitUntilCompleted];
     }
     
-    free(indices);
     return collected;
 }
 
@@ -851,9 +860,15 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     vector_float2 gravityVec = SSKVectorFromPoint(self.gravity);
     BOOL hasGravity = !simd_equal(gravityVec, (vector_float2){0, 0});
 
-    for (NSUInteger idx = 0; idx < self.capacity; idx++) {
+    // Iterate backwards so O(1) swap-removal cannot skip an element.
+    for (NSUInteger i = _aliveListCount; i > 0; i--) {
+        NSUInteger idx = _aliveList[i - 1];
         SSKParticleState *state = &self.states[idx];
-        if (!state->alive) { continue; }
+        if (!state->alive) {
+            [self removeFromAliveTracking:idx];
+            _freeStack[_freeStackCount++] = idx;
+            continue;
+        }
 
         state->life += (float)dt;
         if (state->life >= state->maxLife) {
@@ -920,7 +935,7 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     uniforms->gravity = SSKVectorFromPoint(self.gravity);
     uniforms->dt = (float)dt;
     uniforms->globalDamping = (float)self.globalDamping;
-    uniforms->padding = 0.0f;
+    uniforms->particleCount = (uint32_t)self.capacity;
 
     NSUInteger aliveCount = [self aliveParticleCount];
     if (aliveCount == 0) {
@@ -938,7 +953,7 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     [encoder setBuffer:self.particleBuffer offset:0 atIndex:0];
     [encoder setBuffer:self.uniformsBuffer offset:0 atIndex:1];
 
-    NSUInteger threadCount = aliveCount;
+    NSUInteger threadCount = self.capacity;
     NSUInteger threadWidth = MAX(self.computePipeline.threadExecutionWidth, (NSUInteger)1);
     NSUInteger maxThreads = MAX(self.computePipeline.maxTotalThreadsPerThreadgroup, (NSUInteger)1);
     NSUInteger threadGroupSize = MIN(maxThreads, threadWidth * 8); // heuristic multiple of SIMD width
@@ -1018,23 +1033,23 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         CGContextSetBlendMode(ctx, kCGBlendModeNormal);
     }
 
-    for (NSUInteger idx = 0; idx < self.capacity; idx++) {
+    for (NSUInteger i = 0; i < _aliveListCount; i++) {
+        NSUInteger idx = _aliveList[i];
         SSKParticleState *state = &self.states[idx];
         if (!state->alive) { continue; }
 
-        SSKParticle *particle = self.particles[idx];
         if (self.renderHandler) {
-            self.renderHandler(ctx, particle);
+            self.renderHandler(ctx, self.particles[idx]);
             continue;
         }
 
-        CGFloat size = MAX(0.0, particle.size);
-        CGRect rect = CGRectMake(particle.position.x - size * 0.5,
-                                 particle.position.y - size * 0.5,
+        CGFloat size = MAX(0.0, state->size);
+        CGRect rect = CGRectMake(state->position.x - size * 0.5f,
+                                 state->position.y - size * 0.5f,
                                  size,
                                  size);
 
-        NSColor *renderColor = particle.color ?: [NSColor whiteColor];
+        NSColor *renderColor = SSKColorFromVector(state->color) ?: [NSColor whiteColor];
         CGFloat blurScale = (self.blendMode == SSKParticleBlendModeAdditive) ? 0.9 : 0.6;
         CGFloat blurRadius = size * blurScale;
         CGColorRef blurColor = CGColorCreateCopyWithAlpha(renderColor.CGColor, renderColor.alphaComponent * 0.85);
@@ -1044,11 +1059,11 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
             CGContextSetShadowWithColor(ctx, CGSizeZero, blurRadius, blurColor);
         }
 
-        if (fabs(particle.rotation) > 0.001) {
+        if (fabsf(state->rotation) > 0.001f) {
             CGContextSaveGState(ctx);
-            CGContextTranslateCTM(ctx, particle.position.x, particle.position.y);
-            CGContextRotateCTM(ctx, particle.rotation);
-            CGContextTranslateCTM(ctx, -particle.position.x, -particle.position.y);
+            CGContextTranslateCTM(ctx, state->position.x, state->position.y);
+            CGContextRotateCTM(ctx, state->rotation);
+            CGContextTranslateCTM(ctx, -state->position.x, -state->position.y);
             CGContextFillEllipseInRect(ctx, rect);
             CGContextRestoreGState(ctx);
         } else {
@@ -1104,12 +1119,21 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     }
 
     // Iterate alive indices via C array — no NSNumber unboxing
+    BOOL usePreviousFrame = (sourceStates != self.states);
+    if (usePreviousFrame && !_previousFramePool) {
+        _previousFramePool = [NSMutableArray arrayWithCapacity:self.capacity];
+        for (NSUInteger i = 0; i < self.capacity; i++) {
+            SSKParticle *p = [[SSKParticle alloc] initWithState:&sourceStates[i] index:i];
+            [_previousFramePool addObject:p];
+        }
+    }
     for (NSUInteger i = 0; i < _aliveListCount; i++) {
         NSUInteger idx = _aliveList[i];
-        if (sourceStates == self.states) {
+        if (!usePreviousFrame) {
             [alive addObject:self.particles[idx]];
         } else {
-            SSKParticle *particle = [[SSKParticle alloc] initWithState:&sourceStates[idx] index:idx];
+            SSKParticle *particle = _previousFramePool[idx];
+            particle.state = &sourceStates[idx];
             [alive addObject:particle];
         }
     }
@@ -1199,6 +1223,9 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
     self.computePipeline = nil;
     self.initializePipeline = nil;
     self.shaderLibrary = nil;
+    self.spawnIndicesBuffer = nil;
+    self.spawnParamsBuffer = nil;
+    self.spawnCountBuffer = nil;
     
     // Release command queue (this stops any pending commands)
     self.commandQueue = nil;

@@ -59,7 +59,8 @@ SOURCES := \
 	SSKSprite.m \
 	SSKMetalBloomPass.m \
 	SSKMetalBlurPass.m \
-	SSKLayerEffects.m
+	SSKLayerEffects.m \
+	SSKShaderLoader.m
 
 INFO_PLIST ?= $(KIT_DIR)/TemplateInfo.plist
 EXECUTABLE := $(MACOS_DIR)/$(SCREENSAVER_NAME)
