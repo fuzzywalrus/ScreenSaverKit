@@ -1151,9 +1151,10 @@ static inline NSColor *SSKColorFromVector(vector_float4 v) {
         SSKMetalRenderer *metalRenderer = [renderer valueForKey:@"renderer"];
         if (metalRenderer && [metalRenderer beginFrame]) {
             [metalRenderer drawParticlesIndirect:self.particleBuffer
-                                        capacity:self.capacity
-                                       blendMode:blendMode
-                                    viewportSize:viewportSize];
+                                       capacity:self.capacity
+                                      blendMode:blendMode
+                                   viewportSize:viewportSize
+                                      particles:[self aliveParticlesSnapshot]];
 
             // Apply post-processing effects
             if (renderer.blurRadius > 0.01) {

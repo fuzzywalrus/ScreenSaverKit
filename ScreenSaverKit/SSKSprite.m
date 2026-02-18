@@ -376,6 +376,17 @@ static const CGFloat kSSKUV_Epsilon = 1e-6;
                                 point.y * backingScaleFactor);
 }
 
+- (void)setSizeInPoints:(NSSize)size scale:(CGFloat)backingScaleFactor {
+    if (!isfinite(backingScaleFactor) || backingScaleFactor <= 0) {
+        NSAssert(NO, @"setSizeInPoints: invalid backingScaleFactor (%g) - must be positive and finite",
+                 backingScaleFactor);
+        backingScaleFactor = 1.0;
+    }
+
+    self.size = NSMakeSize(size.width * backingScaleFactor,
+                           size.height * backingScaleFactor);
+}
+
 - (void)setTextureRectInPixels:(CGRect)rect textureSize:(CGSize)texSize {
     // Guard against division by zero - invalid texture size
     // If texSize is zero or negative, log in debug and set to full texture (0,0)-(1,1)

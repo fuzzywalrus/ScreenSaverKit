@@ -42,11 +42,27 @@ FOUNDATION_EXPORT NSString * const SSKMetalEffectIdentifierColorGrading;
          viewportSize:(CGSize)viewportSize;
 
 /// Renders particles using GPU-accelerated indirect rendering from a particle buffer.
-/// Falls back to CPU path if indirect rendering is not supported.
+/// Falls back to CPU path using `particles` if indirect rendering is not supported.
+///
+/// @param particleBuffer GPU buffer of particle data for indirect rendering.
+/// @param capacity Maximum number of particles in the buffer.
+/// @param blendMode Blend mode (alpha or additive).
+/// @param viewportSize Viewport size in points.
+/// @param particles Optional CPU-side particle array used as fallback when indirect
+///                  rendering is unavailable. Pass nil if no fallback is desired.
+- (void)drawParticlesIndirect:(id<MTLBuffer>)particleBuffer
+                     capacity:(NSUInteger)capacity
+                    blendMode:(SSKParticleBlendMode)blendMode
+                 viewportSize:(CGSize)viewportSize
+                    particles:(nullable NSArray<SSKParticle *> *)particles;
+
+/// Renders particles using GPU-accelerated indirect rendering from a particle buffer.
+/// @deprecated Use drawParticlesIndirect:capacity:blendMode:viewportSize:particles: instead.
 - (void)drawParticlesIndirect:(id<MTLBuffer>)particleBuffer
                       capacity:(NSUInteger)capacity
                      blendMode:(SSKParticleBlendMode)blendMode
-                  viewportSize:(CGSize)viewportSize;
+                  viewportSize:(CGSize)viewportSize
+    __attribute__((deprecated("Use drawParticlesIndirect:capacity:blendMode:viewportSize:particles: instead")));
 
 /// Draws a texture into the current render target at the specified rectangle.
 ///
@@ -64,22 +80,18 @@ FOUNDATION_EXPORT NSString * const SSKMetalEffectIdentifierColorGrading;
 /// @param sprites Array of SSKSprite objects to render. Sprite positions and sizes must be in PIXELS.
 /// @param texture The texture to apply to all sprites (or nil for solid color). Must use premultiplied alpha.
 /// @param blendMode Blend mode (alpha or additive)
-/// @param viewportSize Ignored. Viewport dimensions are taken from the render target's pixel dimensions.
-///                     This parameter exists for API compatibility but has no effect.
 ///
 /// @note Sprite coordinates are in pixels. On Retina displays, use sprite.setPositionInPoints:scale: to convert.
 /// @note The renderer automatically uses the render target's pixel dimensions for the viewport.
 - (void)drawSprites:(NSArray<SSKSprite *> *)sprites
             texture:(nullable id<MTLTexture>)texture
-          blendMode:(SSKParticleBlendMode)blendMode
-       viewportSize:(CGSize)viewportSize;
+          blendMode:(SSKParticleBlendMode)blendMode;
 
 /// Renders an array of SSKSprite objects with explicit sort control.
 ///
 /// @param sprites Array of SSKSprite objects to render. Sprite positions and sizes must be in PIXELS.
 /// @param texture The texture to apply to all sprites (or nil for solid color). Must use premultiplied alpha.
 /// @param blendMode Blend mode (alpha or additive)
-/// @param viewportSize Ignored. Viewport dimensions are taken from the render target's pixel dimensions.
 /// @param sortByZ If YES, sprites are sorted by z before rendering (lower z first = behind)
 ///
 /// @note Sprite coordinates are in pixels. On Retina displays, use sprite.setPositionInPoints:scale: to convert.
@@ -87,8 +99,22 @@ FOUNDATION_EXPORT NSString * const SSKMetalEffectIdentifierColorGrading;
 - (void)drawSprites:(NSArray<SSKSprite *> *)sprites
             texture:(nullable id<MTLTexture>)texture
           blendMode:(SSKParticleBlendMode)blendMode
-       viewportSize:(CGSize)viewportSize
             sortByZ:(BOOL)sortByZ;
+
+/// @deprecated Use drawSprites:texture:blendMode: instead. viewportSize is ignored.
+- (void)drawSprites:(NSArray<SSKSprite *> *)sprites
+            texture:(nullable id<MTLTexture>)texture
+          blendMode:(SSKParticleBlendMode)blendMode
+       viewportSize:(CGSize)viewportSize
+    __attribute__((deprecated("Use drawSprites:texture:blendMode: instead — viewportSize is ignored")));
+
+/// @deprecated Use drawSprites:texture:blendMode:sortByZ: instead. viewportSize is ignored.
+- (void)drawSprites:(NSArray<SSKSprite *> *)sprites
+            texture:(nullable id<MTLTexture>)texture
+          blendMode:(SSKParticleBlendMode)blendMode
+       viewportSize:(CGSize)viewportSize
+            sortByZ:(BOOL)sortByZ
+    __attribute__((deprecated("Use drawSprites:texture:blendMode:sortByZ: instead — viewportSize is ignored")));
 
 /// Applies a separable Gaussian blur to the current render target.
 - (void)applyBlur:(CGFloat)radius;

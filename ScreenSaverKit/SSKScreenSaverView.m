@@ -49,27 +49,45 @@ static const NSTimeInterval kSSKPreferencePollInterval = 2.0;
 @implementation SSKScreenSaverView
 
 + (NSString *)preferencesDomain {
-    static NSString *resolvedDomain = nil;
+    static NSMutableDictionary<NSString *, NSString *> *resolvedDomains = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        NSBundle *bundle = [NSBundle bundleForClass:self];
-        NSString *bundleIdentifier = bundle.bundleIdentifier;
-        NSString *bundleName = [bundle objectForInfoDictionaryKey:(__bridge NSString *)kCFBundleNameKey];
-        NSString *className = NSStringFromClass(self);
-
-        NSString *preferred = bundleIdentifier.length ? bundleIdentifier : (bundleName.length ? bundleName : className);
-        NSMutableArray<NSString *> *legacyDomains = [NSMutableArray array];
-        if (bundleName.length && ![bundleName isEqualToString:preferred]) {
-            [legacyDomains addObject:bundleName];
-        }
-        if (className.length && ![className isEqualToString:preferred]) {
-            [legacyDomains addObject:className];
-        }
-
-        [self ssk_migrateLegacyPreferencesIfNeededFromDomains:legacyDomains toDomain:preferred];
-        resolvedDomain = preferred;
+        resolvedDomains = [NSMutableDictionary dictionary];
     });
-    return resolvedDomain;
+
+    NSString *className = NSStringFromClass(self);
+    @synchronized (resolvedDomains) {
+        NSString *cached = resolvedDomains[className];
+        if (cached) {
+            return cached;
+        }
+    }
+
+    // Resolve outside the lock (migration may do I/O)
+    NSBundle *bundle = [NSBundle bundleForClass:self];
+    NSString *bundleIdentifier = bundle.bundleIdentifier;
+    NSString *bundleName = [bundle objectForInfoDictionaryKey:(__bridge NSString *)kCFBundleNameKey];
+
+    NSString *preferred = bundleIdentifier.length ? bundleIdentifier : (bundleName.length ? bundleName : className);
+    NSMutableArray<NSString *> *legacyDomains = [NSMutableArray array];
+    if (bundleName.length && ![bundleName isEqualToString:preferred]) {
+        [legacyDomains addObject:bundleName];
+    }
+    if (className.length && ![className isEqualToString:preferred]) {
+        [legacyDomains addObject:className];
+    }
+
+    [self ssk_migrateLegacyPreferencesIfNeededFromDomains:legacyDomains toDomain:preferred];
+
+    @synchronized (resolvedDomains) {
+        // Another thread may have resolved while we were migrating — keep first result
+        NSString *existing = resolvedDomains[className];
+        if (existing) {
+            return existing;
+        }
+        resolvedDomains[className] = preferred;
+    }
+    return preferred;
 }
 
 /**
@@ -303,6 +321,20 @@ static const NSTimeInterval kSSKPreferencePollInterval = 2.0;
     SSKEntityPool *pool = [[SSKEntityPool alloc] initWithCapacity:capacity factory:factory];
     [self.ssk_ownedPools addObject:pool];
     return pool;
+}
+
+- (CGFloat)backingScaleFactor {
+    if (self.window) {
+        return self.window.backingScaleFactor;
+    }
+    NSScreen *screen = self.window.screen ?: NSScreen.mainScreen;
+    return screen ? screen.backingScaleFactor : 1.0;
+}
+
+- (NSSize)viewportSizeInPixels {
+    CGFloat scale = self.backingScaleFactor;
+    NSSize bounds = self.bounds.size;
+    return NSMakeSize(bounds.width * scale, bounds.height * scale);
 }
 
 @end

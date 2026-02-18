@@ -1079,6 +1079,29 @@
     XCTAssertEqualWithAccuracy(sprite.textureOffset.x, 0.75, 0.001);  // Last frame
 }
 
+#pragma mark - Size Helper Tests
+
+- (void)testSetSizeInPointsScale2x {
+    SSKSprite *sprite = [[SSKSprite alloc] init];
+    [sprite setSizeInPoints:NSMakeSize(180, 100) scale:2.0];
+    XCTAssertEqual(sprite.size.width, 360.0);
+    XCTAssertEqual(sprite.size.height, 200.0);
+}
+
+- (void)testSetSizeInPointsScale1x {
+    SSKSprite *sprite = [[SSKSprite alloc] init];
+    [sprite setSizeInPoints:NSMakeSize(180, 100) scale:1.0];
+    XCTAssertEqual(sprite.size.width, 180.0);
+    XCTAssertEqual(sprite.size.height, 100.0);
+}
+
+- (void)testSetSizeInPointsScale3x {
+    SSKSprite *sprite = [[SSKSprite alloc] init];
+    [sprite setSizeInPoints:NSMakeSize(50, 30) scale:3.0];
+    XCTAssertEqual(sprite.size.width, 150.0);
+    XCTAssertEqual(sprite.size.height, 90.0);
+}
+
 #pragma mark - Texture Rect Helper Tests
 
 - (void)testSetTextureRectInPixelsNormalCase {

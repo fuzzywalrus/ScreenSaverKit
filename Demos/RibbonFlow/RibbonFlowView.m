@@ -266,14 +266,15 @@ typedef struct {
 
     renderer.clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
 
-    // Use indirect rendering if available (GPU-side instance building)
+    // Use indirect rendering with CPU fallback
     if (renderer.useIndirectRendering && self.particleSystem.particleBuffer) {
+        NSArray<SSKParticle *> *fallback = [self.particleSystem aliveParticlesSnapshot];
         [renderer drawParticlesIndirect:self.particleSystem.particleBuffer
                                capacity:self.particleSystem.capacity
                               blendMode:self.particleSystem.blendMode
-                           viewportSize:self.bounds.size];
+                           viewportSize:self.bounds.size
+                              particles:fallback];
     } else {
-        // Fallback to CPU path
         NSArray<SSKParticle *> *particles = [self.particleSystem aliveParticlesSnapshot];
         [renderer drawParticles:particles
                       blendMode:self.particleSystem.blendMode

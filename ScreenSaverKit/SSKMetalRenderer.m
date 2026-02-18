@@ -196,9 +196,10 @@ NSString * const SSKMetalEffectIdentifierColorGrading = @"com.ssk.effects.colorg
 }
 
 - (void)drawParticlesIndirect:(id<MTLBuffer>)particleBuffer
-                      capacity:(NSUInteger)capacity
-                     blendMode:(SSKParticleBlendMode)blendMode
-                  viewportSize:(CGSize)viewportSize {
+                     capacity:(NSUInteger)capacity
+                    blendMode:(SSKParticleBlendMode)blendMode
+                 viewportSize:(CGSize)viewportSize
+                    particles:(NSArray<SSKParticle *> *)particles {
     if (!self.particlePass) { return; }
     id<MTLCommandBuffer> commandBuffer = self.currentCommandBuffer;
     id<MTLTexture> target = [self activeRenderTarget];
@@ -220,18 +221,35 @@ NSString * const SSKMetalEffectIdentifierColorGrading = @"com.ssk.effects.colorg
             return;
         }
 
-        // Log failure and fall through to CPU path
         if ([SSKDiagnostics isEnabled]) {
             [SSKDiagnostics log:@"SSKMetalRenderer: indirect particle pass failed, falling back to CPU path."];
         }
     }
 
-    // Fallback: not implemented - indirect rendering requires particle snapshot
-    // Caller should use drawParticles:blendMode:viewportSize: instead
+    // Fallback to CPU path if particles array is provided
+    if (particles) {
+        [self drawParticles:particles blendMode:blendMode viewportSize:viewportSize];
+        return;
+    }
+
     if ([SSKDiagnostics isEnabled]) {
-        [SSKDiagnostics log:@"SSKMetalRenderer: drawParticlesIndirect called but indirect rendering not available or failed."];
+        [SSKDiagnostics log:@"SSKMetalRenderer: drawParticlesIndirect called but indirect rendering not available and no CPU fallback particles provided."];
     }
 }
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-implementations"
+- (void)drawParticlesIndirect:(id<MTLBuffer>)particleBuffer
+                      capacity:(NSUInteger)capacity
+                     blendMode:(SSKParticleBlendMode)blendMode
+                  viewportSize:(CGSize)viewportSize {
+    [self drawParticlesIndirect:particleBuffer
+                       capacity:capacity
+                      blendMode:blendMode
+                   viewportSize:viewportSize
+                      particles:nil];
+}
+#pragma clang diagnostic pop
 
 - (void)drawTexture:(id<MTLTexture>)texture atRect:(CGRect)rect {
     if (!texture) { return; }
@@ -248,26 +266,38 @@ NSString * const SSKMetalEffectIdentifierColorGrading = @"com.ssk.effects.colorg
     
     [self drawSprites:@[sprite]
               texture:texture
-            blendMode:SSKParticleBlendModeAlpha
-         viewportSize:self.drawableSize];
+            blendMode:SSKParticleBlendModeAlpha];
 }
 
 - (void)drawSprites:(NSArray<SSKSprite *> *)sprites
             texture:(id<MTLTexture>)texture
+          blendMode:(SSKParticleBlendMode)blendMode {
+    [self drawSprites:sprites texture:texture blendMode:blendMode sortByZ:self.spriteSortingEnabled];
+}
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-implementations"
+- (void)drawSprites:(NSArray<SSKSprite *> *)sprites
+            texture:(id<MTLTexture>)texture
           blendMode:(SSKParticleBlendMode)blendMode
        viewportSize:(CGSize)viewportSize {
-    // Use spriteSortingEnabled property as default
-    [self drawSprites:sprites
-              texture:texture
-            blendMode:blendMode
-         viewportSize:viewportSize
-              sortByZ:self.spriteSortingEnabled];
+    (void)viewportSize;
+    [self drawSprites:sprites texture:texture blendMode:blendMode sortByZ:self.spriteSortingEnabled];
 }
 
 - (void)drawSprites:(NSArray<SSKSprite *> *)sprites
             texture:(id<MTLTexture>)texture
           blendMode:(SSKParticleBlendMode)blendMode
        viewportSize:(CGSize)viewportSize
+            sortByZ:(BOOL)sortByZ {
+    (void)viewportSize;
+    [self drawSprites:sprites texture:texture blendMode:blendMode sortByZ:sortByZ];
+}
+#pragma clang diagnostic pop
+
+- (void)drawSprites:(NSArray<SSKSprite *> *)sprites
+            texture:(id<MTLTexture>)texture
+          blendMode:(SSKParticleBlendMode)blendMode
             sortByZ:(BOOL)sortByZ {
     if (!self.spritePass) {
         if ([SSKDiagnostics isEnabled]) {

@@ -8,7 +8,7 @@
 #import "ScreenSaverKit/SSKParticleSystem.h"
 #import "ScreenSaverKit/SSKDiagnostics.h"
 
-/// Default logo size in points
+/// Default logo size in pixels
 static const CGFloat kLogoWidth = 180.0;
 static const CGFloat kLogoHeight = 100.0;
 
@@ -49,9 +49,8 @@ static const CGFloat kColorCycleRate = 0.15;
     if ((self = [super initWithFrame:frame isPreview:isPreview])) {
         self.animationTimeInterval = 1.0 / 60.0;
         
-        // Initialize sprite with default values
+        // Initialize sprite (size set in setupMetalRenderer once scale is known)
         _logoSprite = [[SSKSprite alloc] init];
-        _logoSprite.size = NSMakeSize(kLogoWidth, kLogoHeight);
         _logoSprite.opacity = 1.0;
         
         // Random starting direction
@@ -79,10 +78,11 @@ static const CGFloat kColorCycleRate = 0.15;
     // Position sprite at center initially (in points)
     CGSize bounds = self.bounds.size;
     self.positionInPoints = NSMakePoint(bounds.width / 2.0, bounds.height / 2.0);
-    
-    // Convert to pixels for the sprite
-    CGFloat scale = (self.window != nil) ? self.window.backingScaleFactor : 1.0;
+
+    // Convert position to pixels for the sprite; size is already in pixels
+    CGFloat scale = self.backingScaleFactor;
     [self.logoSprite setPositionInPoints:self.positionInPoints scale:scale];
+    self.logoSprite.size = NSMakeSize(kLogoWidth, kLogoHeight);
     
     // Set initial scale (can be adjusted via preferences)
     self.logoSprite.scale = CGSizeMake(1.0, 1.0);
@@ -186,12 +186,11 @@ static const CGFloat kColorCycleRate = 0.15;
         [self loadLogoTextureWithDevice:renderer.device];
     }
     
-    // Draw the sprite (SSKMetalRenderer uses viewportSize in points, converts internally)
+    // Draw the sprite
     if (self.logoSprite && renderer.spritePass) {
         [renderer drawSprites:@[self.logoSprite]
                       texture:self.logoTexture
-                    blendMode:SSKParticleBlendModeAlpha
-                 viewportSize:self.bounds.size];
+                    blendMode:SSKParticleBlendModeAlpha];
     }
 }
 
@@ -247,8 +246,9 @@ static const CGFloat kColorCycleRate = 0.15;
     
     // Store position in points and convert to pixels for sprite
     self.positionInPoints = position;
-    CGFloat scale = (self.window != nil) ? self.window.backingScaleFactor : 1.0;
+    CGFloat scale = self.backingScaleFactor;
     [self.logoSprite setPositionInPoints:position scale:scale];
+    self.logoSprite.size = NSMakeSize(kLogoWidth, kLogoHeight);
     
     // Flip sprite on bounce (demonstrates new flip feature)
     if (bouncedX) {

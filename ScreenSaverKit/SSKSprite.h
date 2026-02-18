@@ -538,6 +538,26 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)setPositionInPoints:(NSPoint)point scale:(CGFloat)backingScaleFactor;
 
 /**
+ * Sets size from point dimensions, converting to pixels.
+ *
+ * This helper method converts from Cocoa's point-based sizes to SSK's pixel-based
+ * sizes. Use this when you have size values in points and need to set sprite size.
+ *
+ * On Retina displays, points are smaller than pixels:
+ *   - Non-Retina: 1 point = 1 pixel (scale = 1.0)
+ *   - Retina: 1 point = 2 pixels (scale = 2.0)
+ *
+ * @param size Size in points (Cocoa coordinate system)
+ * @param backingScaleFactor The backing scale factor (window.backingScaleFactor)
+ *
+ * Example:
+ *   CGFloat scale = self.window.backingScaleFactor;
+ *   [sprite setSizeInPoints:NSMakeSize(180, 100) scale:scale];
+ *   // On Retina (scale=2.0), this sets size to (360, 200) pixels
+ */
+- (void)setSizeInPoints:(NSSize)size scale:(CGFloat)backingScaleFactor;
+
+/**
  * Sets texture region from pixel rect, normalizing to UV space.
  * 
  * This helper converts pixel coordinates (from a sprite sheet/atlas) into

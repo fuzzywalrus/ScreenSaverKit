@@ -15,8 +15,9 @@ NS_ASSUME_NONNULL_BEGIN
  - Preferences are registered from `-defaultPreferences` during init.
  - `-preferencesDidChange:changedKeys:` is called immediately after init with
    all keys (initial `changedKeys` contains every registered key) and thereafter
-   only when a value actually differs. Preferences are polled every 0.5s on the
-   main run loop, so no custom observers are required.
+   only when a value actually differs. Preferences are monitored via
+   NSUserDefaultsDidChangeNotification and polled every 2.0s as a fallback,
+   so no custom observers are required.
  - Animation helpers (`advanceAnimationClock`, `deltaTime`) are paused/resumed
    automatically when the saver starts and stops animating.
  - Entity pools created via `makeEntityPoolWithCapacity:factory:` are owned by
@@ -102,6 +103,15 @@ NS_ASSUME_NONNULL_BEGIN
 /// Example: `self.spritePool = [self makeEntityPoolWithCapacity:64 factory:^{ return [Sprite new]; }];`
 - (SSKEntityPool *)makeEntityPoolWithCapacity:(NSUInteger)capacity
                                       factory:(SSKEntityFactoryBlock)factory;
+
+/// Returns the backing scale factor for the view's window/screen.
+/// Fallback chain: window → window.screen → mainScreen → 1.0.
+/// Use this instead of duplicating `self.window.backingScaleFactor` boilerplate.
+@property (nonatomic, readonly) CGFloat backingScaleFactor;
+
+/// Returns the view's bounds size multiplied by `backingScaleFactor`.
+/// This gives the true pixel dimensions of the viewport.
+@property (nonatomic, readonly) NSSize viewportSizeInPixels;
 
 @end
 

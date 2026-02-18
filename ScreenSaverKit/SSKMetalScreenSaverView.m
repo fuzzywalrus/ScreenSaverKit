@@ -139,7 +139,7 @@
     layer.framebufferOnly = NO;
     layer.opaque = YES;
     layer.device = device;
-    layer.contentsScale = [self currentBackingScaleFactor];
+    layer.contentsScale = self.backingScaleFactor;
 
     SSKMetalRenderer *renderer = [[SSKMetalRenderer alloc] initWithLayer:layer];
     if (!renderer) {
@@ -162,7 +162,7 @@
 
 - (void)updateMetalDrawableSize {
     if (!self.metalLayer) { return; }
-    CGFloat scale = [self currentBackingScaleFactor];
+    CGFloat scale = self.backingScaleFactor;
     if (scale <= 0.0) {
         scale = 1.0;
     }
@@ -170,14 +170,6 @@
     CGSize boundsSize = self.bounds.size;
     self.metalLayer.drawableSize = CGSizeMake(MAX(boundsSize.width * scale, 1.0),
                                               MAX(boundsSize.height * scale, 1.0));
-}
-
-- (CGFloat)currentBackingScaleFactor {
-    if (self.window) {
-        return self.window.backingScaleFactor;
-    }
-    NSScreen *screen = self.window.screen ?: NSScreen.mainScreen;
-    return screen ? screen.backingScaleFactor : 1.0;
 }
 
 @end
