@@ -661,7 +661,7 @@ When `zDepthEnabled` is set:
 
 ### Example: Rain Screensaver with Z-Depth
 
-See `/Demos/Rain/RainView.m` for a complete example of z-depth usage:
+See `../Demos/Rain/RainView.m` for a complete example of z-depth usage:
 - GPU spawn with z-depth enabled
 - Length multiplier synchronization with renderer
 - CPU fallback path with matching z-depth calculations
@@ -725,5 +725,5 @@ See `ARCHITECTURE_ANALYSIS.md` → "Testing Architecture" for more details.
 - `SSKParticleSystem.md` – Detailed particle system docs
 - `tutorial.md` – End-to-end saver creation guide
 - `Demos/Rain/README.md` – Z-depth implementation example
-- `/Tests/README.md` – Test suite documentation
+- `../Tests/README.md` – Test suite documentation
 - `PERFORMANCE_TESTING.md` – Performance benchmarking guide

@@ -44,7 +44,7 @@ logoSprite.colorTint = [NSColor redColor];
 logoSprite.opacity = 1.0;
 
 // Use pixel coordinates (convert from points for Retina)
-CGFloat scale = self.window.backingScaleFactor ?: 1.0;
+CGFloat scale = (self.window != nil) ? self.window.backingScaleFactor : 1.0;
 [logoSprite setPositionInPoints:NSMakePoint(centerX, centerY) scale:scale];
 ```
 
@@ -72,11 +72,10 @@ In your `renderMetalFrame:deltaTime:` override, draw sprites using the renderer:
     // Update sprite position/animation
     [self updateAnimation:dt];
     
-    // Draw the sprite (renderer handles pixel coordinate conversion)
+    // Draw the sprite (renderer uses render target pixel dimensions for viewport)
     [renderer drawSprites:@[self.logoSprite]
                   texture:self.logoTexture
-                blendMode:SSKParticleBlendModeAlpha
-             viewportSize:self.bounds.size];
+                blendMode:SSKParticleBlendModeAlpha];
 }
 ```
 
@@ -106,11 +105,11 @@ The classic bounce animation checks if the sprite has hit an edge, with added fl
 
 - Use `setPositionInPoints:scale:` to convert from points to pixels
 - The `scale` parameter should be `window.backingScaleFactor` or `layer.contentsScale`
-- The `viewportSize` passed to `drawSprites:` is in points; the renderer converts internally
+- `drawSprites:texture:blendMode:` does not take viewport size; the renderer uses the render target's pixel dimensions
 
 ```objc
 // Setup
-CGFloat scale = self.window.backingScaleFactor ?: 1.0;
+CGFloat scale = (self.window != nil) ? self.window.backingScaleFactor : 1.0;
 [sprite setPositionInPoints:NSMakePoint(100, 200) scale:scale];
 
 // Update
@@ -183,7 +182,6 @@ for (int i = 0; i < 10; i++) {
 [renderer drawSprites:sprites
               texture:toasterTexture
             blendMode:SSKParticleBlendModeAlpha
-         viewportSize:self.bounds.size
               sortByZ:YES];
 ```
 
@@ -215,8 +213,7 @@ renderer.spritePass.cullingEnabled = YES;
 // Sprites far outside viewport are automatically skipped during encoding
 [renderer drawSprites:manySprites
               texture:texture
-            blendMode:SSKParticleBlendModeAlpha
-         viewportSize:self.bounds.size];
+            blendMode:SSKParticleBlendModeAlpha];
 ```
 
 ## Blend Modes

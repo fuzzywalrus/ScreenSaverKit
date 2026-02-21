@@ -165,7 +165,7 @@ The sprite system provides hardware-accelerated 2D rendering for classic sprite-
     self.logoSprite = [[SSKSprite alloc] init];
     
     // Use pixel coordinates (convert from points for Retina)
-    CGFloat scale = self.window?.backingScaleFactor ?: 1.0;
+    CGFloat scale = (self.window != nil) ? self.window.backingScaleFactor : 1.0;
     [self.logoSprite setPositionInPoints:NSMakePoint(100, 100) scale:scale];
     
     self.logoSprite.size = NSMakeSize(180, 100);  // Size in pixels
@@ -188,11 +188,10 @@ The sprite system provides hardware-accelerated 2D rendering for classic sprite-
     CGFloat scale = (self.window != nil) ? self.window.backingScaleFactor : 1.0;
     [self.logoSprite setPositionInPoints:pos scale:scale];
     
-    // Draw sprite - renderer handles points-to-pixels conversion internally
+    // Draw sprite (renderer uses render target pixel dimensions for viewport)
     [renderer drawSprites:@[self.logoSprite]
                   texture:self.logoTexture
-                blendMode:SSKParticleBlendModeAlpha
-             viewportSize:self.bounds.size];
+                blendMode:SSKParticleBlendModeAlpha];
 }
 ```
 
@@ -232,7 +231,7 @@ self.logoSprite.animationPlaying = YES;
 - All sprite coordinates and sizes are in **pixels** (not points)
 - On Retina displays, multiply points by `window.backingScaleFactor` or `layer.contentsScale`
 - Use `setPositionInPoints:scale:` helper to convert from points to pixels
-- When using `SSKMetalRenderer.drawSprites:`, pass `viewportSize` in points—the renderer automatically uses the render target's pixel dimensions internally
+- `SSKMetalRenderer.drawSprites:texture:blendMode:` (and the `sortByZ:` variant) do not take viewport size—the renderer uses the render target's pixel dimensions internally
 
 **Advanced Features:**
 - **Viewport Culling** – Enable `spritePass.cullingEnabled = YES` to skip off-screen sprites
@@ -244,10 +243,9 @@ self.logoSprite.animationPlaying = YES;
 - `SSKParticleBlendModeAlpha` – Standard alpha blending for opaque/transparent sprites (uses premultiplied alpha; color tinting is correctly applied with proper alpha scaling)
 - `SSKParticleBlendModeAdditive` – Additive blending for glow effects
 
-**API Changes:**
-- `SSKMetalSpritePass` methods now use `viewportPixels:` parameter to clarify pixel-based coordinates
-- Old `viewportSize:` methods on `SSKMetalSpritePass` are deprecated but still work (forwarders provided)
-- `SSKMetalRenderer.drawSprites:` accepts `viewportSize:` in points for backward compatibility—it automatically converts to pixels using the render target dimensions
+**API:**
+- `SSKMetalRenderer.drawSprites:texture:blendMode:` and `drawSprites:texture:blendMode:sortByZ:` do not take a viewport parameter; the renderer uses the active render target's pixel dimensions
+- Deprecated `drawSprites:...viewportSize:...` variants on `SSKMetalRenderer` are still available but ignore the viewport size (forwarders call the new API)
 
 See `Demos/DVDLogoMetal/` for a complete working example with bounce physics, color cycling, and flip-on-bounce effects.
 
@@ -347,6 +345,7 @@ The performance testing suite helps verify functionality, measure frame rates, i
   `make -f Demos/SimpleLines/Makefile`.
 - `Demos/DVDlogo/` – retro floating DVD logo with solid or rotating palette colour modes, adjustable size, speed, colour cycling, and optional random start behaviour. It also uses a multi-file project structure to demo a more advanced project structure. Build it via  `make -f Demos/DVDlogo/Makefile`.
 - `Demos/DVDLogoMetal/` – Metal-accelerated version of the DVD logo screensaver demonstrating the 2D sprite rendering system. Uses `SSKMetalSpritePass` for GPU-accelerated sprite rendering with color cycling on bounce. Includes tutorial documentation explaining sprite rendering concepts. Build it via `make -f Demos/DVDLogoMetal/Makefile`. See `Demos/DVDLogoMetal/README.md` for detailed documentation.
+- `Demos/NyanCat/` – Metal-accelerated Nyan Cat screensaver with 6-frame manual animation, rainbow trail, scrolling stars, vignette overlay, and optional FPS counter. Demonstrates per-frame textures, viewport-relative sizing, and preference binding. Build it via `make -f Demos/NyanCat/Makefile`. See `Demos/NyanCat/README.md` for details.
 - `Demos/RibbonFlow/` – flowing additive ribbons inspired by the classic Apple Flurry screensaver. Demonstrates Metal-accelerated particle rendering with the `SSKParticleSystem` and `SSKMetalParticleRenderer` working together for smooth, GPU-powered effects. Build it via `make -f Demos/RibbonFlow/Makefile`.
 - `Demos/Rain/` – classic retro rain animation screensaver with GPU-accelerated particle spawning and optional z-depth perspective effects. Demonstrates simple particle-based effects, adjustable rain angle/speed/density, and hardware-accelerated z-depth calculations for realistic 3D depth illusion. Features include brightness control, width/length customization, and optional FPS counter. Perfect example of using `spawnParticlesGPU:parameters:` with z-depth support. Build it via `make -f Demos/Rain/Makefile`. See `Demos/Rain/README.md` for detailed documentation.
 - `Demos/MetalParticleTest/` – diagnostic particle fountain with automatic Metal/CPU fallback. Shows real-time rendering statistics, particle counts, and detailed Metal pipeline status. Perfect for testing GPU availability and debugging Metal particle renderer issues. Build it via `make -f Demos/MetalParticleTest/Makefile`.

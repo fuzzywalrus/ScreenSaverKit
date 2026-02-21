@@ -76,7 +76,7 @@ Includes:
 ### "I need to understand the current architecture"
 1. Read: **ARCHITECTURE_ANALYSIS.md** (Overview section)
 2. Reference: **ARCHITECTURE_DIAGRAMS.md** (Component Hierarchy, Frame Pipeline)
-3. Code: `/Users/greg/Development/ScreenSaverKit/ScreenSaverKit/SSKMetalRenderer.h`
+3. Code: `../ScreenSaverKit/SSKMetalRenderer.h`
 
 ### "I want to add a new effect"
 1. Reference: **EFFECT_IMPLEMENTATION_GUIDE.md** (Adding New Effects section)
@@ -100,13 +100,13 @@ Includes:
 
 ### "I want to understand the test suite"
 1. Read: **ARCHITECTURE_ANALYSIS.md** (Testing Architecture section)
-2. Reference: `/Tests/README.md` for test organization and running tests
-3. Code: `/Tests/SSKParticleSystemTests.m` for example test patterns
+2. Reference: `../Tests/README.md` for test organization and running tests
+3. Code: `../Tests/SSKParticleSystemTests.m` for example test patterns
 
 ### "I need to optimize particle system performance"
 1. Start: **PERFORMANCE_OPTIMIZATIONS.md** (Overview and Usage sections)
 2. Enable: Async rendering mode and indirect rendering (Quick Start examples)
-3. Measure: Use benchmark tools in `/Tools/Benchmark/` to verify improvements
+3. Measure: Use benchmark tools in `../Tools/Benchmark/` to verify improvements
 4. Troubleshoot: Performance Characteristics sections for each optimization
 
 ---
@@ -181,7 +181,7 @@ Particles (CPU/GPU) → Render to drawable → Optional blur → Optional bloom 
 
 #### Testing Infrastructure
 - **Analysis**: ARCHITECTURE_ANALYSIS.md → "Testing Architecture"
-- **Tests**: `/Tests/` directory with XCTest-based test suite
+- **Tests**: `../Tests/` directory with XCTest-based test suite
 - **Coverage**: Unit tests for all major components, Metal-specific tests with fallback
 - **Performance**: See `PERFORMANCE_TESTING.md` for performance benchmarking tools
 
@@ -232,11 +232,11 @@ All examples include:
 - Metal Performance Optimization guides
 
 ### Related Source Files
-- `/ScreenSaverKit/SSKMetalRenderer.h` - Public API reference
-- `/ScreenSaverKit/Shaders/SSKParticleShaders.metal` - Shader implementations (includes z-depth kernels)
-- `/ScreenSaverKit/SSKParticleSystem.h` - Particle system API (includes spawn parameters)
-- `/Demos/RibbonFlow/RibbonFlowView.m` - Real-world usage example
-- `/Demos/Rain/RainView.m` - Z-depth implementation example
+- `../ScreenSaverKit/SSKMetalRenderer.h` - Public API reference
+- `../ScreenSaverKit/Shaders/SSKParticleShaders.metal` - Shader implementations (includes z-depth kernels)
+- `../ScreenSaverKit/SSKParticleSystem.h` - Particle system API (includes spawn parameters)
+- `../Demos/RibbonFlow/RibbonFlowView.m` - Real-world usage example
+- `../Demos/Rain/RainView.m` - Z-depth implementation example
 
 ---
 

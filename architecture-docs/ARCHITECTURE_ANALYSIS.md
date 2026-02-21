@@ -11,7 +11,7 @@ ScreenSaverKit uses a **FX Pass-based architecture** for composing effects. Each
 ### 1. Core Components
 
 #### **SSKMetalRenderer** (Main Coordinator)
-- **Location**: `/Users/greg/Development/ScreenSaverKit/ScreenSaverKit/SSKMetalRenderer.h/m`
+- **Location**: `../ScreenSaverKit/SSKMetalRenderer.h/m`
 - **Role**: Unified Metal renderer that owns the drawable lifecycle and provides higher-level drawing entry points
 - **Responsibilities**:
   - Manages command buffers and drawable fetching
@@ -33,7 +33,7 @@ ScreenSaverKit uses a **FX Pass-based architecture** for composing effects. Each
 ```
 
 #### **SSKMetalPass** (Abstract Base Class)
-- **Location**: `/Users/greg/Development/ScreenSaverKit/ScreenSaverKit/SSKMetalPass.h/m`
+- **Location**: `../ScreenSaverKit/SSKMetalPass.h/m`
 - **Role**: Abstract base for all rendering passes
 - **Interface**:
 ```objc
@@ -49,7 +49,7 @@ ScreenSaverKit uses a **FX Pass-based architecture** for composing effects. Each
 ### 2. Effect Passes (FX Passes)
 
 #### **SSKMetalParticlePass**
-- **Location**: `/Users/greg/Development/ScreenSaverKit/ScreenSaverKit/SSKMetalParticlePass.h/m`
+- **Location**: `../ScreenSaverKit/SSKMetalParticlePass.h/m`
 - **Inherits from**: SSKMetalPass
 - **Purpose**: Render particle instances using Metal
 - **Key Features**:
@@ -80,7 +80,7 @@ typedef struct {
 ```
 
 #### **SSKMetalBlurPass**
-- **Location**: `/Users/greg/Development/ScreenSaverKit/ScreenSaverKit/SSKMetalBlurPass.h/m`
+- **Location**: `../ScreenSaverKit/SSKMetalBlurPass.h/m`
 - **Inherits from**: SSKMetalPass
 - **Purpose**: Separable Gaussian blur (GPU compute-based)
 - **Algorithm**:
@@ -99,7 +99,7 @@ typedef struct {
 ```
 
 #### **SSKMetalBloomPass**
-- **Location**: `/Users/greg/Development/ScreenSaverKit/ScreenSaverKit/SSKMetalBloomPass.h/m`
+- **Location**: `../ScreenSaverKit/SSKMetalBloomPass.h/m`
 - **Inherits from**: SSKMetalPass
 - **Purpose**: Brightness threshold + blur for glow effects
 - **Algorithm** (3-stage):
@@ -122,7 +122,7 @@ typedef struct {
 
 ### 3. Metal Shader Library
 
-**Location**: `/Users/greg/Development/ScreenSaverKit/ScreenSaverKit/Shaders/SSKParticleShaders.metal`
+**Location**: `../ScreenSaverKit/Shaders/SSKParticleShaders.metal`
 
 **Compiled to**: `SSKParticleShaders.metallib` (in bundle)
 
@@ -231,7 +231,7 @@ The architecture uses **in-place rendering** with render target swapping:
 ## Particle System Integration
 
 ### SSKParticleSystem
-- **Location**: `/Users/greg/Development/ScreenSaverKit/ScreenSaverKit/SSKParticleSystem.h/m`
+- **Location**: `../ScreenSaverKit/SSKParticleSystem.h/m`
 - **Dual Rendering Path**:
   - **CPU Path**: CoreGraphics rendering to CGContext
   - **GPU Path**: Metal compute shader for simulation + render pass for drawing
@@ -269,7 +269,7 @@ The architecture uses **in-place rendering** with render target swapping:
 ```
 
 ### SSKMetalParticleRenderer
-- **Location**: `/Users/greg/Development/ScreenSaverKit/ScreenSaverKit/SSKMetalParticleRenderer.h/m`
+- **Location**: `../ScreenSaverKit/SSKMetalParticleRenderer.h/m`
 - **Purpose**: Convenient wrapper around SSKMetalRenderer for particle-only workflows
 - **Additional Properties**:
   ```objc
@@ -303,7 +303,7 @@ The architecture uses **in-place rendering** with render target swapping:
 ## Texture Cache Strategy
 
 ### SSKMetalTextureCache
-- **Location**: `/Users/greg/Development/ScreenSaverKit/ScreenSaverKit/SSKMetalTextureCache.h/m`
+- **Location**: `../ScreenSaverKit/SSKMetalTextureCache.h/m`
 - **Purpose**: Avoid per-frame texture allocation overhead
 - **Storage**:
   - Hash buckets keyed by (width, height, pixelFormat, usage)
@@ -534,7 +534,7 @@ kPrefBloomThreshold: @(0.65)
 
 ### Test Suite Overview
 
-ScreenSaverKit includes a comprehensive test suite using XCTest framework, located in `/Tests/`. The test architecture mirrors the component structure and provides both unit and integration testing.
+ScreenSaverKit includes a comprehensive test suite using XCTest framework, located in `../Tests/`. The test architecture mirrors the component structure and provides both unit and integration testing.
 
 **Test Organization**:
 - **Unit Tests**: Component-level tests for individual classes
@@ -545,7 +545,7 @@ ScreenSaverKit includes a comprehensive test suite using XCTest framework, locat
 ### Test Components
 
 #### SSKParticleSystemTests
-- **Location**: `/Tests/SSKParticleSystemTests.m`
+- **Location**: `../Tests/SSKParticleSystemTests.m`
 - **Coverage**:
   - Initialization and capacity management
   - Particle spawning (CPU and GPU paths)
@@ -558,7 +558,7 @@ ScreenSaverKit includes a comprehensive test suite using XCTest framework, locat
 - **Metal-Specific Tests**: Automatically skip when Metal unavailable
 
 #### SSKMetalRendererTests
-- **Location**: `/Tests/SSKMetalRendererTests.m`
+- **Location**: `../Tests/SSKMetalRendererTests.m`
 - **Coverage**:
   - Device creation and initialization
   - Texture cache functionality
@@ -566,14 +566,14 @@ ScreenSaverKit includes a comprehensive test suite using XCTest framework, locat
   - Graceful fallback when Metal unavailable
 
 #### SSKMetalPassTests
-- **Location**: `/Tests/SSKMetalPassTests.m`
+- **Location**: `../Tests/SSKMetalPassTests.m`
 - **Coverage**:
   - Pass initialization and setup
   - Device and library requirements
   - Base pass interface compliance
 
 #### SSKVectorMathTests
-- **Location**: `/Tests/SSKVectorMathTests.m`
+- **Location**: `../Tests/SSKVectorMathTests.m`
 - **Coverage**:
   - Vector operations (addition, subtraction, scaling)
   - Vector length and normalization
@@ -581,7 +581,7 @@ ScreenSaverKit includes a comprehensive test suite using XCTest framework, locat
   - Edge cases (zero vectors, small vectors)
 
 #### SSKColorPaletteTests
-- **Location**: `/Tests/SSKColorPaletteTests.m`
+- **Location**: `../Tests/SSKColorPaletteTests.m`
 - **Coverage**:
   - Palette creation and factory methods
   - Empty and single-color palettes
@@ -589,7 +589,7 @@ ScreenSaverKit includes a comprehensive test suite using XCTest framework, locat
 ### Test Infrastructure
 
 #### TestHelpers
-- **Location**: `/Tests/TestHelpers.h/m`
+- **Location**: `../Tests/TestHelpers.h/m`
 - **Utilities**:
   - `createTempDirectory` - Temporary directory management
   - `assertPoint:approximatelyEquals:epsilon:` - Floating-point point comparison
@@ -598,7 +598,7 @@ ScreenSaverKit includes a comprehensive test suite using XCTest framework, locat
   - `loadParticleShaderLibraryWithDevice:` - Metal shader library loading for tests
 
 #### Test Build System
-- **Location**: `/Tests/Makefile`
+- **Location**: `../Tests/Makefile`
 - **Features**:
   - Standalone build system (no Xcode project required)
   - Supports both arm64 and x86_64 architectures
