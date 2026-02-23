@@ -188,6 +188,14 @@ FOUNDATION_EXPORT NSString * const SSKMetalEffectIdentifierColorGrading;
 /// Requires Metal device with indirect command support. Defaults to NO.
 @property (nonatomic) BOOL useIndirectRendering;
 
+/// When YES, particle draw calls accumulate onto a persistent trail texture
+/// that fades each frame. Creates long, luminous trail effects. Defaults to NO.
+@property (nonatomic) BOOL trailPersistenceEnabled;
+
+/// Fade rate per frame for trail persistence (0.0-1.0). Lower values = longer trails.
+/// Defaults to 0.05.
+@property (nonatomic) CGFloat trailFadeRate;
+
 /// When YES, drawSprites: automatically sorts sprites by z (back-to-front).
 /// Default is NO for backward compatibility.
 @property (nonatomic) BOOL spriteSortingEnabled;

@@ -3,9 +3,9 @@ KIT_DIR := $(abspath $(CURRENT_DIR)/../..)
 KIT_SOURCE_DIR := $(KIT_DIR)/ScreenSaverKit
 KIT_INCLUDE := -I$(KIT_DIR)
 
-SCREENSAVER_NAME ?= PerformanceBenchmarkSaver
-BUNDLE_ID ?= com.example.screenSaverKit.performanceBenchmark
-PRINCIPAL_CLASS ?= PerformanceBenchmarkView
+SCREENSAVER_NAME ?= LuminaireSaver
+BUNDLE_ID ?= com.greggant.screensaver.luminaire
+PRINCIPAL_CLASS ?= LuminaireView
 BUILD_DIR ?= $(CURRENT_DIR)/Build
 
 BUNDLE_DIR := $(BUILD_DIR)/$(SCREENSAVER_NAME).saver
@@ -27,12 +27,14 @@ METALC := xcrun -sdk macosx metal -fmodules-cache-path=$(MODULE_CACHE_DIR)
 METALLIB := xcrun -sdk macosx metallib
 
 SHADER_DIR := $(KIT_DIR)/ScreenSaverKit/Shaders
-SHADER_SOURCES := $(SHADER_DIR)/SSKParticleShaders.metal
-SHADER_AIRS := $(SHADER_BUILD_DIR)/SSKParticleShaders.air
-SHADER_METALLIB := $(RESOURCES_DIR)/SSKParticleShaders.metallib
+PARTICLE_SHADER_AIR := $(SHADER_BUILD_DIR)/SSKParticleShaders.air
+SIMULATION_SHADER_AIR := $(SHADER_BUILD_DIR)/SSKSimulationShaders.air
+PARTICLE_SHADER_METALLIB := $(RESOURCES_DIR)/SSKParticleShaders.metallib
+SIMULATION_SHADER_METALLIB := $(RESOURCES_DIR)/SSKSimulationShaders.metallib
 
 SOURCES := \
-	$(CURRENT_DIR)/PerformanceBenchmarkView.m \
+	$(CURRENT_DIR)/LuminaireView.m \
+	$(CURRENT_DIR)/LuminairePalettes.m \
 	$(KIT_SOURCE_DIR)/SSKScreenSaverView.m \
 	$(KIT_SOURCE_DIR)/SSKAssetManager.m \
 	$(KIT_SOURCE_DIR)/SSKAnimationClock.m \
@@ -47,24 +49,28 @@ SOURCES := \
 	$(KIT_SOURCE_DIR)/SSKMetalTextureCache.m \
 	$(KIT_SOURCE_DIR)/SSKMetalEffectStage.m \
 	$(KIT_SOURCE_DIR)/SSKMetalRenderDiagnostics.m \
-	$(KIT_SOURCE_DIR)/SSKMetalSpritePass.m \
 	$(KIT_SOURCE_DIR)/SSKMetalPass.m \
 	$(KIT_SOURCE_DIR)/SSKMetalParticlePass.m \
+	$(KIT_SOURCE_DIR)/SSKMetalSpritePass.m \
+	$(KIT_SOURCE_DIR)/SSKSprite.m \
 	$(KIT_SOURCE_DIR)/SSKMetalBloomPass.m \
 	$(KIT_SOURCE_DIR)/SSKMetalBlurPass.m \
 	$(KIT_SOURCE_DIR)/SSKMetalTrailPass.m \
-	$(KIT_SOURCE_DIR)/SSKSprite.m \
-	$(KIT_SOURCE_DIR)/SSKSpriteAnimationSequence.m \
-	$(KIT_SOURCE_DIR)/SSKLayerEffects.m
+	$(KIT_SOURCE_DIR)/SSKLayerEffects.m \
+	$(KIT_SOURCE_DIR)/SSKPreferenceBinder.m \
+	$(KIT_SOURCE_DIR)/SSKConfigurationWindowController.m \
+	$(KIT_SOURCE_DIR)/SSKColorPalette.m \
+	$(KIT_SOURCE_DIR)/SSKPaletteManager.m \
+	$(KIT_SOURCE_DIR)/SSKColorUtilities.m
 
 INFO_PLIST := $(CURRENT_DIR)/Info.plist
 EXECUTABLE := $(MACOS_DIR)/$(SCREENSAVER_NAME)
 
 .PHONY: all clean install run
 
-all: $(EXECUTABLE) $(SHADER_METALLIB) $(THUMBNAIL_PNG) $(THUMBNAIL_PNG_2X)
+all: $(EXECUTABLE) $(PARTICLE_SHADER_METALLIB) $(SIMULATION_SHADER_METALLIB) $(THUMBNAIL_PNG) $(THUMBNAIL_PNG_2X)
 
-$(EXECUTABLE): $(SOURCES) $(CONTENTS_DIR)/Info.plist $(SHADER_METALLIB) | $(MACOS_DIR)
+$(EXECUTABLE): $(SOURCES) $(CONTENTS_DIR)/Info.plist $(PARTICLE_SHADER_METALLIB) $(SIMULATION_SHADER_METALLIB) | $(MACOS_DIR)
 	@mkdir -p $(MODULE_CACHE_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) $(FRAMEWORKS) -bundle -o $@ $(SOURCES)
 
@@ -81,11 +87,18 @@ $(MACOS_DIR):
 $(SHADER_BUILD_DIR):
 	@mkdir -p $(SHADER_BUILD_DIR)
 
-$(SHADER_BUILD_DIR)/%.air: $(SHADER_DIR)/%.metal | $(SHADER_BUILD_DIR)
+$(SHADER_BUILD_DIR)/SSKParticleShaders.air: $(SHADER_DIR)/SSKParticleShaders.metal | $(SHADER_BUILD_DIR)
 	@mkdir -p $(MODULE_CACHE_DIR)
 	$(METALC) -c $< -o $@
 
-$(RESOURCES_DIR)/%.metallib: $(SHADER_BUILD_DIR)/%.air | $(MACOS_DIR)
+$(RESOURCES_DIR)/SSKParticleShaders.metallib: $(PARTICLE_SHADER_AIR) | $(MACOS_DIR)
+	$(METALLIB) $< -o $@
+
+$(SHADER_BUILD_DIR)/SSKSimulationShaders.air: $(SHADER_DIR)/SSKSimulationShaders.metal | $(SHADER_BUILD_DIR)
+	@mkdir -p $(MODULE_CACHE_DIR)
+	$(METALC) -c $< -o $@
+
+$(RESOURCES_DIR)/SSKSimulationShaders.metallib: $(SIMULATION_SHADER_AIR) | $(MACOS_DIR)
 	$(METALLIB) $< -o $@
 
 $(THUMBNAIL_PNG): $(THUMBNAIL_SRC) | $(MACOS_DIR)
@@ -103,5 +116,3 @@ install: all
 
 run: install
 	open -a ScreenSaverEngine "$(BUNDLE_DIR)"
-
-

@@ -15,6 +15,10 @@ typedef NS_ENUM(NSUInteger, SSKPreferenceControlKind) {
 
 - (instancetype)initWithDefaults:(ScreenSaverDefaults *)defaults;
 
+/// Optional callback invoked after a bound control persists a value.
+/// The argument is the preference key that changed.
+@property (nonatomic, copy, nullable) void (^changeHandler)(NSString *key);
+
 /// Refreshes bound controls from the latest persisted defaults.
 - (void)refreshControls;
 

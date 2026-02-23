@@ -58,6 +58,7 @@ SOURCES := \
 	$(KIT_SOURCE_DIR)/SSKMetalParticlePass.m \
 	$(KIT_SOURCE_DIR)/SSKMetalBloomPass.m \
 	$(KIT_SOURCE_DIR)/SSKMetalBlurPass.m \
+	$(KIT_SOURCE_DIR)/SSKMetalTrailPass.m \
 	$(KIT_SOURCE_DIR)/SSKSprite.m \
 	$(KIT_SOURCE_DIR)/SSKSpriteAnimationSequence.m \
 	$(KIT_SOURCE_DIR)/SSKLayerEffects.m

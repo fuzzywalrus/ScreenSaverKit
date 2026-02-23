@@ -133,5 +133,59 @@
     XCTAssertFalse([ids containsObject:@"com.ssk.tests.noop"]);
 }
 
+#pragma mark - Trail Persistence Properties
+
+- (void)testTrailPersistenceDefaults {
+    CAMetalLayer *layer = [CAMetalLayer layer];
+    layer.device = MTLCreateSystemDefaultDevice();
+    if (!layer.device) {
+        XCTSkip(@"Metal not available on this system");
+    }
+
+    SSKMetalRenderer *renderer = [[SSKMetalRenderer alloc] initWithLayer:layer];
+    if (!renderer) {
+        XCTSkip(@"SSKMetalRenderer could not be initialised on this system");
+    }
+
+    XCTAssertFalse(renderer.trailPersistenceEnabled);
+    XCTAssertEqualWithAccuracy(renderer.trailFadeRate, 0.05, 0.001);
+}
+
+- (void)testTrailPersistenceConfiguration {
+    CAMetalLayer *layer = [CAMetalLayer layer];
+    layer.device = MTLCreateSystemDefaultDevice();
+    if (!layer.device) {
+        XCTSkip(@"Metal not available on this system");
+    }
+
+    SSKMetalRenderer *renderer = [[SSKMetalRenderer alloc] initWithLayer:layer];
+    if (!renderer) {
+        XCTSkip(@"SSKMetalRenderer could not be initialised on this system");
+    }
+
+    renderer.trailPersistenceEnabled = YES;
+    renderer.trailFadeRate = 0.02;
+
+    XCTAssertTrue(renderer.trailPersistenceEnabled);
+    XCTAssertEqualWithAccuracy(renderer.trailFadeRate, 0.02, 0.001);
+}
+
+- (void)testIndirectRenderingProperty {
+    CAMetalLayer *layer = [CAMetalLayer layer];
+    layer.device = MTLCreateSystemDefaultDevice();
+    if (!layer.device) {
+        XCTSkip(@"Metal not available on this system");
+    }
+
+    SSKMetalRenderer *renderer = [[SSKMetalRenderer alloc] initWithLayer:layer];
+    if (!renderer) {
+        XCTSkip(@"SSKMetalRenderer could not be initialised on this system");
+    }
+
+    XCTAssertFalse(renderer.useIndirectRendering);
+    renderer.useIndirectRendering = YES;
+    XCTAssertTrue(renderer.useIndirectRendering);
+}
+
 @end
 

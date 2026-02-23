@@ -9,6 +9,7 @@
 #import "SSKSprite.h"
 #import "SSKMetalBlurPass.h"
 #import "SSKMetalBloomPass.h"
+#import "SSKMetalTrailPass.h"
 
 NSString * const SSKMetalEffectIdentifierBlur = @"com.ssk.effects.blur";
 NSString * const SSKMetalEffectIdentifierBloom = @"com.ssk.effects.bloom";
@@ -29,6 +30,7 @@ NSString * const SSKMetalEffectIdentifierColorGrading = @"com.ssk.effects.colorg
 @property (nonatomic, strong, nullable) id<MTLLibrary> spriteShaderLibrary;
 @property (nonatomic, strong, nullable) SSKMetalBlurPass *blurPass;
 @property (nonatomic, strong, nullable) SSKMetalBloomPass *bloomPass;
+@property (nonatomic, strong, nullable) SSKMetalTrailPass *trailPass;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, SSKMetalEffectStage *> *effectRegistry;
 @property (nonatomic) BOOL needsClearOnNextPass;
 @end
@@ -61,6 +63,7 @@ NSString * const SSKMetalEffectIdentifierColorGrading = @"com.ssk.effects.colorg
             return nil;
         }
         _clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
+        _trailFadeRate = 0.05;
         _textureCache = [[SSKMetalTextureCache alloc] initWithDevice:device];
         _effectRegistry = [[NSMutableDictionary alloc] init];
 
@@ -181,6 +184,16 @@ NSString * const SSKMetalEffectIdentifierColorGrading = @"com.ssk.effects.colorg
     if (!commandBuffer || !target) { return; }
 
     NSArray<SSKParticle *> *liveParticles = particles ?: @[];
+
+    if (self.trailPersistenceEnabled) {
+        [self drawParticlesWithTrail:liveParticles
+                           blendMode:blendMode
+                        viewportSize:viewportSize
+                       commandBuffer:commandBuffer
+                              target:target];
+        return;
+    }
+
     MTLLoadAction loadAction = self.needsClearOnNextPass ? MTLLoadActionClear : MTLLoadActionLoad;
     BOOL success = [self.particlePass encodeParticles:liveParticles
                                             blendMode:blendMode
@@ -205,18 +218,43 @@ NSString * const SSKMetalEffectIdentifierColorGrading = @"com.ssk.effects.colorg
     id<MTLTexture> target = [self activeRenderTarget];
     if (!commandBuffer || !target || !particleBuffer) { return; }
 
+    // Resolve trail texture if trail persistence is enabled
+    id<MTLTexture> renderTarget = target;
+    SSKMetalTrailPass *trail = nil;
+    if (self.trailPersistenceEnabled) {
+        trail = [self ensureTrailPass];
+        if (trail) {
+            id<MTLTexture> trailTex = [trail trailTextureForSize:CGSizeMake(target.width, target.height)];
+            if (trailTex) {
+                [trail fadeWithRate:(float)self.trailFadeRate commandBuffer:commandBuffer];
+                renderTarget = trailTex;
+            }
+        }
+    }
+
     // Try indirect rendering if enabled and supported
     if (self.useIndirectRendering && self.particlePass.supportsIndirectRendering) {
-        MTLLoadAction loadAction = self.needsClearOnNextPass ? MTLLoadActionClear : MTLLoadActionLoad;
         BOOL success = [self.particlePass encodeParticlesIndirect:particleBuffer
                                                           capacity:capacity
                                                          blendMode:blendMode
                                                       viewportSize:viewportSize
                                                      commandBuffer:commandBuffer
-                                                      renderTarget:target
-                                                        loadAction:loadAction
+                                                      renderTarget:renderTarget
+                                                        loadAction:MTLLoadActionLoad
                                                         clearColor:self.clearColor];
         if (success) {
+            if (trail && renderTarget != target) {
+                if (self.needsClearOnNextPass) {
+                    MTLRenderPassDescriptor *rpd = [MTLRenderPassDescriptor renderPassDescriptor];
+                    rpd.colorAttachments[0].texture = target;
+                    rpd.colorAttachments[0].loadAction = MTLLoadActionClear;
+                    rpd.colorAttachments[0].storeAction = MTLStoreActionStore;
+                    rpd.colorAttachments[0].clearColor = self.clearColor;
+                    id<MTLRenderCommandEncoder> enc = [commandBuffer renderCommandEncoderWithDescriptor:rpd];
+                    [enc endEncoding];
+                }
+                [trail blitTo:target commandBuffer:commandBuffer];
+            }
             self.needsClearOnNextPass = NO;
             return;
         }
@@ -253,6 +291,54 @@ NSString * const SSKMetalEffectIdentifierColorGrading = @"com.ssk.effects.colorg
 
 - (void)drawTexture:(id<MTLTexture>)texture atRect:(CGRect)rect {
     if (!texture) { return; }
+
+    // Fallback path when sprite shaders/pass are unavailable.
+    // This covers full-frame copies (e.g. Amble intermediate -> drawable) so the
+    // frame is still presented instead of appearing blank/magenta.
+    if (!self.spritePass) {
+        id<MTLCommandBuffer> commandBuffer = self.currentCommandBuffer;
+        id<MTLTexture> target = [self activeRenderTarget];
+        if (!commandBuffer || !target) { return; }
+
+        CGRect targetRect = CGRectMake(0.0, 0.0, (CGFloat)target.width, (CGFloat)target.height);
+        BOOL fullFrameCopy = CGRectEqualToRect(rect, targetRect);
+        BOOL sizeMatches = (texture.width == target.width && texture.height == target.height);
+        if (!fullFrameCopy || !sizeMatches) {
+            if ([SSKDiagnostics isEnabled]) {
+                [SSKDiagnostics log:@"SSKMetalRenderer: drawTexture fallback requires full-frame same-size copy (src %lux%lu, dst %lux%lu).",
+                 (unsigned long)texture.width,
+                 (unsigned long)texture.height,
+                 (unsigned long)target.width,
+                 (unsigned long)target.height];
+            }
+            return;
+        }
+
+        if (self.needsClearOnNextPass) {
+            MTLRenderPassDescriptor *rpd = [MTLRenderPassDescriptor renderPassDescriptor];
+            rpd.colorAttachments[0].texture = target;
+            rpd.colorAttachments[0].loadAction = MTLLoadActionClear;
+            rpd.colorAttachments[0].storeAction = MTLStoreActionStore;
+            rpd.colorAttachments[0].clearColor = self.clearColor;
+            id<MTLRenderCommandEncoder> enc = [commandBuffer renderCommandEncoderWithDescriptor:rpd];
+            [enc endEncoding];
+        }
+
+        id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+        if (!blit) { return; }
+        [blit copyFromTexture:texture
+                  sourceSlice:0
+                  sourceLevel:0
+                 sourceOrigin:MTLOriginMake(0, 0, 0)
+                   sourceSize:MTLSizeMake(texture.width, texture.height, 1)
+                    toTexture:target
+             destinationSlice:0
+             destinationLevel:0
+            destinationOrigin:MTLOriginMake(0, 0, 0)];
+        [blit endEncoding];
+        self.needsClearOnNextPass = NO;
+        return;
+    }
     
     // Create a single sprite to render the texture
     // NOTE: rect is expected to be in PIXELS, not points.
@@ -571,6 +657,67 @@ NSString * const SSKMetalEffectIdentifierColorGrading = @"com.ssk.effects.colorg
     return [SSKShaderLoader loadLibraryNamed:@"SSKSpriteShaders"
                                       device:device
                                       bundle:[NSBundle bundleForClass:self.class]];
+}
+
+- (SSKMetalTrailPass *)ensureTrailPass {
+    if (!self.trailPass) {
+        self.trailPass = [[SSKMetalTrailPass alloc] initWithDevice:self.device
+                                                           library:self.shaderLibrary];
+    }
+    return self.trailPass;
+}
+
+- (void)drawParticlesWithTrail:(NSArray<SSKParticle *> *)particles
+                     blendMode:(SSKParticleBlendMode)blendMode
+                  viewportSize:(CGSize)viewportSize
+                 commandBuffer:(id<MTLCommandBuffer>)commandBuffer
+                        target:(id<MTLTexture>)target {
+    SSKMetalTrailPass *trail = [self ensureTrailPass];
+    if (!trail) {
+        // Fall back to normal drawing if trail pass creation failed
+        MTLLoadAction loadAction = self.needsClearOnNextPass ? MTLLoadActionClear : MTLLoadActionLoad;
+        [self.particlePass encodeParticles:particles
+                                 blendMode:blendMode
+                              viewportSize:viewportSize
+                             commandBuffer:commandBuffer
+                              renderTarget:target
+                                loadAction:loadAction
+                                clearColor:self.clearColor];
+        self.needsClearOnNextPass = NO;
+        return;
+    }
+
+    CGSize trailSize = CGSizeMake(target.width, target.height);
+    id<MTLTexture> trailTexture = [trail trailTextureForSize:trailSize];
+    if (!trailTexture) {
+        self.needsClearOnNextPass = NO;
+        return;
+    }
+
+    // 1. Fade the trail texture
+    [trail fadeWithRate:(float)self.trailFadeRate commandBuffer:commandBuffer];
+
+    // 2. Draw new particles onto the trail texture (preserving existing trails)
+    [self.particlePass encodeParticles:particles
+                             blendMode:blendMode
+                          viewportSize:viewportSize
+                         commandBuffer:commandBuffer
+                          renderTarget:trailTexture
+                            loadAction:MTLLoadActionLoad
+                            clearColor:MTLClearColorMake(0, 0, 0, 1)];
+
+    // 3. Clear the drawable if needed, then blit trail onto it
+    if (self.needsClearOnNextPass) {
+        MTLRenderPassDescriptor *rpd = [MTLRenderPassDescriptor renderPassDescriptor];
+        rpd.colorAttachments[0].texture = target;
+        rpd.colorAttachments[0].loadAction = MTLLoadActionClear;
+        rpd.colorAttachments[0].storeAction = MTLStoreActionStore;
+        rpd.colorAttachments[0].clearColor = self.clearColor;
+        id<MTLRenderCommandEncoder> enc = [commandBuffer renderCommandEncoderWithDescriptor:rpd];
+        [enc endEncoding];
+    }
+    [trail blitTo:target commandBuffer:commandBuffer];
+    self.needsClearOnNextPass = NO;
 }
 
 - (id<MTLTexture>)activeRenderTarget {

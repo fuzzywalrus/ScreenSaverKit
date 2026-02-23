@@ -316,7 +316,10 @@
     }
     
     SSKMetalSpritePass *pass = [[SSKMetalSpritePass alloc] init];
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wnonnull"
     XCTAssertFalse([pass setupWithDevice:device library:nil]);
+#pragma clang diagnostic pop
 }
 
 - (void)testSpritePassEncodesEmptyArray {
@@ -345,7 +348,7 @@
     BOOL encoded = [pass encodeSprites:@[]
                                texture:nil
                              blendMode:SSKParticleBlendModeAlpha
-                          viewportSize:CGSizeMake(32, 32)
+                          viewportPixels:CGSizeMake(32, 32)
                          commandBuffer:commandBuffer
                           renderTarget:target
                             loadAction:MTLLoadActionClear
@@ -386,7 +389,7 @@
     BOOL encoded = [pass encodeSprites:@[sprite1, sprite2]
                                texture:nil
                              blendMode:SSKParticleBlendModeAlpha
-                          viewportSize:CGSizeMake(32, 32)
+                          viewportPixels:CGSizeMake(32, 32)
                          commandBuffer:commandBuffer
                           renderTarget:target
                             loadAction:MTLLoadActionClear
@@ -438,7 +441,7 @@
     BOOL encoded = [pass encodeSprites:@[sprite]
                                texture:spriteTexture
                              blendMode:SSKParticleBlendModeAlpha
-                          viewportSize:CGSizeMake(64, 64)
+                          viewportPixels:CGSizeMake(64, 64)
                          commandBuffer:commandBuffer
                           renderTarget:target
                             loadAction:MTLLoadActionClear
@@ -479,7 +482,7 @@
     BOOL encoded = [pass encodeSprites:@[sprite]
                                texture:nil
                              blendMode:SSKParticleBlendModeAdditive
-                          viewportSize:CGSizeMake(32, 32)
+                          viewportPixels:CGSizeMake(32, 32)
                          commandBuffer:commandBuffer
                           renderTarget:target
                             loadAction:MTLLoadActionClear
@@ -522,7 +525,7 @@
                                     count:1
                                   texture:nil
                                 blendMode:SSKParticleBlendModeAlpha
-                             viewportSize:CGSizeMake(32, 32)
+                             viewportPixels:CGSizeMake(32, 32)
                             commandBuffer:commandBuffer
                              renderTarget:target
                                loadAction:MTLLoadActionClear
@@ -694,7 +697,7 @@
     BOOL encoded = [pass encodeSprites:@[sprite1, sprite2, sprite3]
                                texture:nil
                              blendMode:SSKParticleBlendModeAlpha
-                          viewportSize:CGSizeMake(64, 64)
+                          viewportPixels:CGSizeMake(64, 64)
                          commandBuffer:commandBuffer
                           renderTarget:target
                             loadAction:MTLLoadActionClear

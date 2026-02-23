@@ -16,7 +16,7 @@ Currently this is in alpha development, so expect possible breaking changes in f
 - ✅ Proper animation start/stop handling across preview, WallpaperAgent and ScreenSaverEngine hosts
 - ✅ Asset loading helpers, animation timing utilities, entity pooling, and diagnostics hooks
 - ✅ Pre-built configuration sheet scaffolding with preference binding helpers
-- ✅ Hardware-accelerated particle system with Metal rendering support
+- ✅ Particle system with GPU simulation, GPU spawn, and Metal rendering (CPU fallback)
 - ✅ Color palette management and interpolation utilities
 - ✅ Vector math helpers for smooth animations
 
@@ -85,8 +85,9 @@ Keeping these concerns in one place lets each screensaver focus on drawing and b
 - `SSKColorPalette` + `SSKPaletteManager` – shared palette definitions with interpolation helpers and registration per saver module.
 - `SSKColorUtilities` – convenience serializers/deserializers for storing `NSColor` instances inside `ScreenSaverDefaults`.
 - `SSKVectorMath` – small collection of inline NSPoint helpers (add, scale, reflect, clamp) for animation math.
-- `SSKParticleSystem` – lightweight particle engine with CPU and Metal-accelerated rendering modes. Supports additive/alpha blending, automatic fade behaviors, and custom per-particle rendering callbacks. Ideal for sparks, trails, explosions, and flowing ribbon effects. See `ScreenSaverKit/SSKParticleSystem.md` for detailed documentation.
-- `SSKMetalParticleRenderer` – hardware-accelerated particle renderer using Metal. Automatically handles GPU pipeline setup, drawable management, and instanced rendering for high-performance particle effects.
+- `SSKParticleSystem` – particle engine with **GPU simulation** (Metal compute), **GPU spawn** (`spawnParticlesGPU:parameters:` for parameterized batches), and CPU/Metal rendering. Supports additive/alpha blending, behavior options (fade alpha/size, color gradient, curl noise, attractors, velocity hue, ribbon mode, z-depth), optional culling, and custom `updateHandler`/`renderHandler`. Includes a 2D curl noise force field for organic swirling motion, up to 4 configurable attractor points with inverse-square falloff, and per-particle rotation. Use `spawnParticles:initializer:` for custom per-particle setup or `spawnParticlesGPU:parameters:` for fast bulk spawns. See `ScreenSaverKit/SSKParticleSystem.md` for details.
+- `SSKMetalTrailPass` – persistent offscreen trail buffer that creates long, luminous particle trails. Each frame fades the previous contents and composites new particle draws on top. Controlled via `SSKMetalRenderer.trailPersistenceEnabled` and `trailFadeRate`. Used by the Flux demo for flowing energy streams.
+- `SSKMetalParticleRenderer` – Metal particle renderer used by `SSKParticleSystem.renderWithMetalRenderer:blendMode:viewportSize:`. Handles GPU pipeline setup, drawable management, and instanced rendering. Optional `useIndirectRendering` for GPU-built instance buffers.
 - `SSKMetalRenderer` + `SSKMetalEffectStage` – extensible Metal post-processing effect system. Register custom effect passes (blur, bloom, color grading, etc.) without modifying framework code. Supports dynamic effect chains with configurable parameters. Built-in blur and bloom effects included. See `architecture-docs/EFFECT_IMPLEMENTATION_GUIDE.md` for detailed documentation on creating custom Metal shader effects.
 - `SSKMetalSpritePass` + `SSKSprite` – 2D sprite rendering system for classic sprite-based screensavers (flying toasters, DVD logo, etc.). Supports position, rotation, non-uniform scaling, horizontal/vertical flipping, color tinting, opacity, z-ordering, and multiple blend modes. Features include sprite animation sequences with loop/ping-pong modes, viewport culling for performance, and pixel-based coordinate system with Retina support. Uses instanced rendering for efficient batch drawing of multiple sprites. See `Demos/DVDLogoMetal/README.md` for a tutorial.
 - `SSKSpriteAnimationSequence` – Immutable animation sequence data for sprite sheet animations. Supports grid-based and custom rect-based sequences, loop modes (Once, Loop, PingPong), per-frame durations, and time-based frame lookup. Integrates seamlessly with `SSKSprite` for automatic UV coordinate updates.
@@ -108,13 +109,13 @@ The architecture docs cover:
 - Testing architecture and test coverage
 - Performance optimizations and recent improvements
 
-## Using Metal-Accelerated Particles
+## Using the Particle System
 
-The particle system supports both CPU (Core Graphics) and GPU (Metal) rendering modes:
+The particle system supports **GPU simulation** (Metal compute), **GPU spawn** (parameterized batches), and **CPU or Metal rendering**. Simulation and rendering automatically use the GPU when a Metal device is available; attaching a custom `updateHandler` disables GPU simulation and uses the CPU path.
 
-**Quick Start:**
+**Quick Start (CPU spawn + Metal render):**
 ```objective-c
-// Create particle system
+// Create particle system (optionally pass device for GPU simulation)
 self.particleSystem = [[SSKParticleSystem alloc] initWithCapacity:1024];
 self.particleSystem.blendMode = SSKParticleBlendModeAdditive;  // or SSKParticleBlendModeAlpha
 
@@ -125,7 +126,7 @@ metalLayer.device = MTLCreateSystemDefaultDevice();
 self.layer = metalLayer;
 self.metalRenderer = [[SSKMetalParticleRenderer alloc] initWithLayer:metalLayer];
 
-// Spawn particles
+// Spawn particles (custom initializer)
 [self.particleSystem spawnParticles:100 initializer:^(SSKParticle *particle) {
     particle.position = center;
     particle.velocity = NSMakePoint(cos(angle) * speed, sin(angle) * speed);
@@ -142,9 +143,20 @@ self.metalRenderer = [[SSKMetalParticleRenderer alloc] initWithLayer:metalLayer]
                                 viewportSize:self.bounds.size];
 ```
 
-**Automatic CPU Fallback:** If Metal initialization fails or the renderer returns `NO`, the particle system automatically falls back to CPU rendering via `drawInContext:` in your `drawRect:` method.
+**GPU spawn (parameterized batches):** For large, range-based spawns (e.g. rain, bursts), use `spawnParticlesGPU:parameters:` with `SSKParticleSpawnParameters` (region type, velocity/size/life/color ranges, direction, z-depth, etc.). Much faster than per-particle initializer blocks when you don’t need custom logic. See `Demos/Rain/` for z-depth rain and `ScreenSaverKit/SSKParticleSystem.h` for the full parameter struct.
 
-See `Demos/RibbonFlow/` for a complete working example, and `ScreenSaverKit/SSKParticleSystem.md` for detailed API documentation.
+**Behavior options:** Use `SSKParticleBehaviorOptions` for fade alpha/size, color gradient (`endColor`), curl noise, attractors, velocity hue, ribbon mode, and more. These run on both CPU and GPU simulation paths.
+
+**Advanced features:**
+- **Curl noise** – Set `noiseScale`, `noiseStrength`, `noiseSpeed` on the particle system and enable `SSKParticleBehaviorOptionCurlNoise` for organic, swirling motion driven by a 2D divergence-free noise field.
+- **Attractor points** – Use `setAttractorAtIndex:position:strength:` (up to 4) with `SSKParticleBehaviorOptionAttractors` to pull particles toward configurable points with inverse-square falloff.
+- **Trail persistence** – Set `renderer.trailPersistenceEnabled = YES` and `renderer.trailFadeRate` to create long, luminous trails that slowly fade over time.
+- **Color gradient** – Set `endColor` on particles (or `endColorMin`/`endColorMax` in spawn params) with `SSKParticleBehaviorOptionColorGradient` to interpolate color over the particle's lifetime.
+- **Ribbon mode** – Set `particleSystem.ribbonModeEnabled = YES` to connect adjacent alive particles into elongated ribbon strips instead of isolated quads.
+
+**CPU fallback:** If Metal isn't available or the renderer returns `NO`, the system falls back to CPU rendering; use `drawInContext:` in `drawRect:` for the CPU draw path.
+
+See `Demos/Flux/` for curl noise + attractors + trails, `Demos/RibbonFlow/` for flowing ribbons, `Demos/Rain/` for z-depth rain, and `ScreenSaverKit/SSKParticleSystem.md` for detailed API documentation.
 
 ## Using Metal-Accelerated Sprites
 
@@ -348,6 +360,7 @@ The performance testing suite helps verify functionality, measure frame rates, i
 - `Demos/NyanCat/` – Metal-accelerated Nyan Cat screensaver with 6-frame manual animation, rainbow trail, scrolling stars, vignette overlay, and optional FPS counter. Demonstrates per-frame textures, viewport-relative sizing, and preference binding. Build it via `make -f Demos/NyanCat/Makefile`. See `Demos/NyanCat/README.md` for details.
 - `Demos/RibbonFlow/` – flowing additive ribbons inspired by the classic Apple Flurry screensaver. Demonstrates Metal-accelerated particle rendering with the `SSKParticleSystem` and `SSKMetalParticleRenderer` working together for smooth, GPU-powered effects. Build it via `make -f Demos/RibbonFlow/Makefile`.
 - `Demos/Rain/` – classic retro rain animation screensaver with GPU-accelerated particle spawning and optional z-depth perspective effects. Demonstrates simple particle-based effects, adjustable rain angle/speed/density, and hardware-accelerated z-depth calculations for realistic 3D depth illusion. Features include brightness control, width/length customization, and optional FPS counter. Perfect example of using `spawnParticlesGPU:parameters:` with z-depth support. Build it via `make -f Demos/Rain/Makefile`. See `Demos/Rain/README.md` for detailed documentation.
+- `Demos/Flux/` – flowing, luminous particle streams driven by curl noise and orbiting attractor points. Demonstrates the expanded particle system features: curl noise force fields, attractor points, trail persistence buffer, lifetime color gradients, additive blending with bloom, and GPU-accelerated simulation. Build it via `make -f Demos/Flux/Makefile`. See `Demos/Flux/README.md` for detailed documentation.
 - `Demos/MetalParticleTest/` – diagnostic particle fountain with automatic Metal/CPU fallback. Shows real-time rendering statistics, particle counts, and detailed Metal pipeline status. Perfect for testing GPU availability and debugging Metal particle renderer issues. Build it via `make -f Demos/MetalParticleTest/Makefile`.
 - `Demos/MetalDiagnostic/` – low-level Metal sanity checker that displays device capabilities, layer configuration, drawable status, and command buffer lifecycle on-screen. Useful for diagnosing Metal initialization issues or verifying hardware support. Build it via `make -f Demos/MetalDiagnostic/Makefile`.
 - `scripts/install-and-refresh.sh` – convenience script that builds, installs, and restarts the relevant macOS services (`legacyScreenSaver`, `WallpaperAgent`, `ScreenSaverEngine`) so macOS immediately sees your latest bundle. Usage:

@@ -13,11 +13,21 @@ typedef NS_ENUM(NSUInteger, SSKParticleBlendMode) {
 
 typedef NS_OPTIONS(NSUInteger, SSKParticleBehaviorOptions) {
     /// No automatic behaviour – particle values remain as initialised.
-    SSKParticleBehaviorOptionNone      = 0,
+    SSKParticleBehaviorOptionNone           = 0,
     /// Fade alpha towards zero as the particle approaches the end of its life.
-    SSKParticleBehaviorOptionFadeAlpha = 1 << 0,
+    SSKParticleBehaviorOptionFadeAlpha      = 1 << 0,
     /// Interpolate size using `sizeOverLifeRange` as the particle ages.
-    SSKParticleBehaviorOptionFadeSize  = 1 << 1,
+    SSKParticleBehaviorOptionFadeSize       = 1 << 1,
+    /// Interpolate color from `baseColor` to `endColor` over the particle's lifetime.
+    SSKParticleBehaviorOptionColorGradient  = 1 << 2,
+    /// Apply curl noise force field to particle velocity (requires noise properties on system).
+    SSKParticleBehaviorOptionCurlNoise      = 1 << 3,
+    /// Apply attractor point forces to particle velocity.
+    SSKParticleBehaviorOptionAttractors     = 1 << 4,
+    /// Map velocity magnitude to hue for dynamic coloring.
+    SSKParticleBehaviorOptionVelocityHue    = 1 << 5,
+    /// Connect sequential particles into ribbon-like strips.
+    SSKParticleBehaviorOptionRibbonMode     = 1 << 6,
 };
 
 /// Simple scalar range used by particle behaviours.
@@ -87,6 +97,10 @@ typedef struct {
     /// Length multiplier for rain drops.
     float lengthMultiplier;
     float padding2; // Align to 16 bytes
+    /// End color range for ColorGradient behavior (RGBA min).
+    vector_float4 endColorMin;
+    /// End color range for ColorGradient behavior (RGBA max).
+    vector_float4 endColorMax;
 } SSKParticleSpawnParameters;
 
 NS_INLINE SSKParticleSpawnParameters SSKParticleSpawnParametersMake(void) {
@@ -127,6 +141,10 @@ typedef void (^SSKParticleRenderer)(CGContextRef ctx, SSKParticle *particle);
 @property (nonatomic) CGFloat sizeVelocity;                     ///< Units per second applied to `size`.
 @property (nonatomic) SSKScalarRange sizeOverLifeRange;         ///< Multiplier range (start → end) for `SSKParticleBehaviorOptionFadeSize`.
 @property (nonatomic) SSKParticleBehaviorOptions behaviorOptions;
+
+/// End color for lifetime gradient (used with `SSKParticleBehaviorOptionColorGradient`).
+/// The particle interpolates from its `color` (baseColor) to `endColor` over its lifetime.
+@property (nonatomic, strong, nullable) NSColor *endColor;
 
 - (vector_float4)metalColorVector;
 @end
@@ -221,9 +239,37 @@ typedef NS_ENUM(NSUInteger, SSKMetalSimulationRenderMode) {
 /// Maximum number of particles the system can hold.
 @property (nonatomic, readonly) NSUInteger capacity;
 
+/// When enabled, particles are rendered as connected ribbon strips instead of
+/// isolated quads. Adjacent particles (by spawn order) are connected by elongated
+/// quads that taper based on lifetime. Defaults to NO.
+@property (nonatomic) BOOL ribbonModeEnabled;
+
 /// Returns the Metal buffer containing particle state data (for indirect rendering).
 /// Available only when Metal simulation is supported.
 @property (nonatomic, readonly, nullable) id<MTLBuffer> particleBuffer;
+
+// MARK: - Curl Noise
+
+/// Spatial frequency of the curl noise field. Smaller values produce larger swirls. Default 0.003.
+@property (nonatomic) CGFloat noiseScale;
+
+/// Force magnitude of the curl noise field. Default 200.0.
+@property (nonatomic) CGFloat noiseStrength;
+
+/// Animation speed of the curl noise field. Default 0.5.
+@property (nonatomic) CGFloat noiseSpeed;
+
+// MARK: - Attractors
+
+/// Sets an attractor point at the given index (0-3). Particles with the Attractors behavior flag
+/// will be pulled toward attractor positions with the given strength.
+- (void)setAttractorAtIndex:(NSUInteger)index position:(NSPoint)position strength:(CGFloat)strength;
+
+/// Removes all attractor points.
+- (void)clearAttractors;
+
+/// Number of active attractor points (0-4).
+@property (nonatomic, readonly) NSUInteger attractorCount;
 
 /// Resets and removes all particles.
 - (void)reset;

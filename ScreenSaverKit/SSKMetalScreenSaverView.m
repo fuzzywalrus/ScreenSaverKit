@@ -69,23 +69,25 @@
 }
 
 - (void)animateOneFrame {
-    NSTimeInterval dt = [self advanceAnimationClock];
-    if (dt <= 0.0) {
-        dt = 1.0 / 60.0;
-    }
-
-    BOOL renderedWithMetal = NO;
-    if (self.useMetalPipeline) {
-        renderedWithMetal = [self renderMetalFrameIfPossibleWithDelta:dt];
-        if (!renderedWithMetal && !self.metalRenderer) {
-            // Retry initialisation on failure (e.g. device became available later).
-            [self ensureMetalInfrastructureIfNeeded];
-            renderedWithMetal = [self renderMetalFrameIfPossibleWithDelta:dt];
+    @autoreleasepool {
+        NSTimeInterval dt = [self advanceAnimationClock];
+        if (dt <= 0.0) {
+            dt = 1.0 / 60.0;
         }
-    }
 
-    if (!renderedWithMetal) {
-        [self renderCPUFrameWithDeltaTime:dt];
+        BOOL renderedWithMetal = NO;
+        if (self.useMetalPipeline) {
+            renderedWithMetal = [self renderMetalFrameIfPossibleWithDelta:dt];
+            if (!renderedWithMetal && !self.metalRenderer) {
+                // Retry initialisation on failure (e.g. device became available later).
+                [self ensureMetalInfrastructureIfNeeded];
+                renderedWithMetal = [self renderMetalFrameIfPossibleWithDelta:dt];
+            }
+        }
+
+        if (!renderedWithMetal) {
+            [self renderCPUFrameWithDeltaTime:dt];
+        }
     }
 }
 

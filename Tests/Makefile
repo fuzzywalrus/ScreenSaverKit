@@ -40,6 +40,7 @@ KIT_SOURCES := \
 	$(KIT_SOURCE_DIR)/SSKSpriteAnimationSequence.m \
 	$(KIT_SOURCE_DIR)/SSKMetalBloomPass.m \
 	$(KIT_SOURCE_DIR)/SSKMetalBlurPass.m \
+	$(KIT_SOURCE_DIR)/SSKMetalTrailPass.m \
 	$(KIT_SOURCE_DIR)/SSKMetalEffectStage.m \
 	$(KIT_SOURCE_DIR)/SSKMetalScreenSaverView.m \
 	$(KIT_SOURCE_DIR)/SSKScreenSaverView.m \

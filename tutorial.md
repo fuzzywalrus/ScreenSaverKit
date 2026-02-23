@@ -341,7 +341,7 @@ For a barebones starting point, copy `ScreenSaverKit/TemplateSaverView.h/.m` ins
 Here are some ideas for making your screen saver unique:
 
 1. **Change the drawing code** in `drawRect:` to render different shapes, images, or effects
-2. **Add new preferences** by extending `defaultPreferences` and `applyPreferencesDictionary:`
+2. **Add new preferences** by extending `defaultPreferences` and handling them in `preferencesDidChange:changedKeys:`
 3. **Load custom assets** using SSKScreenSaverView's asset loading helpers
 4. **Create particle systems** or other visual effects
 5. **Build a custom configuration sheet** with more sophisticated UI controls
@@ -515,8 +515,8 @@ For a complete API reference, check the inline documentation in:
 | --- | --- |
 | **Saver compiles but old behavior shows up** | Run `./scripts/install-and-refresh.sh` or manually quit `legacyScreenSaver`, `WallpaperAgent`, and `ScreenSaverEngine`, then reopen System Settings. |
 | **"Cannot find ScreenSaver framework" error** | Make sure Xcode Command Line Tools are installed: `xcode-select --install` |
-| **Preferences not updating in real-time** | Verify you're calling `refreshPreferencesIfNeeded` in `animateOneFrame` and that `preferencesDidChange:changedKeys:` is implemented. |
-| **Configuration sheet doesn't appear** | Check that your `hasConfigureSheet` method returns `YES` and that you've implemented `configureSheet:`. |
+| **Preferences not updating in real-time** | Verify `preferencesDidChange:changedKeys:` is implemented and that you apply the preference values (e.g. update cached instance variables). The kit polls preferences automatically; you do not need to call anything in `animateOneFrame`. |
+| **Configuration sheet doesn't appear** | Check that your `hasConfigureSheet` method returns `YES` and that you've implemented `configureSheet` (returns an `NSWindow *`). |
 | **Blank/black screen in preview** | Add debug logging to `drawRect:` to verify it's being called. Make sure you're calling `[self setNeedsDisplay:YES]` in `animateOneFrame`. For Metal rendering, check Console.app for shader errors. |
 | **Missing headers in custom project** | Add `-I/path/to/ScreenSaverKit` to your `CFLAGS` (see the demo Makefile for reference). |
 | **Screen saver doesn't appear in System Settings** | Verify your `Info.plist` has the correct `NSPrincipalClass` and that the bundle is properly installed in `~/Library/Screen Savers/`. Run the refresh script to clear Launch Services cache. |

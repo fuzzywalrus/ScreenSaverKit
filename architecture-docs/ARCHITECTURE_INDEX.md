@@ -5,35 +5,38 @@ This directory contains comprehensive documentation about the ScreenSaverKit eff
 ## Documentation Files
 
 ### 1. **ARCHITECTURE_ANALYSIS.md** (Primary Reference)
-**Length**: ~515 lines | **Focus**: In-depth technical analysis
+**Length**: ~750 lines | **Focus**: In-depth technical analysis
 
 Comprehensive analysis covering:
 - Current architecture overview (SSKMetalRenderer, SSKMetalPass hierarchy)
-- Effect Passes (Particle, Blur, Bloom)
-- Metal shader library organization
-- Effect chaining implementation
-- Particle system integration
+- Effect Passes (Particle, Trail, Blur, Bloom)
+- Metal shader libraries (SSKParticleShaders + SSKSimulationShaders)
+- Effect chaining implementation (including trail persistence)
+- Particle system integration (curl noise, attractors, color gradient, ribbon mode)
 - Texture cache strategy
 - Design patterns for adding new effects
 - Coupling and architectural issues
+- Testing architecture (145 tests across 6 test suites)
 - Recent optimizations and refactorings
 
 **Best for**: Understanding how the system works, identifying design issues, planning improvements
 
 ### 2. **ARCHITECTURE_DIAGRAMS.md** (Visual Reference)
-**Length**: ~400 lines | **Focus**: Visual component relationships
+**Length**: ~550 lines | **Focus**: Visual component relationships
 
 Includes diagrams for:
-1. Component hierarchy
-2. Frame rendering pipeline
+1. Component hierarchy (renderer + particle system simulation)
+2. Frame rendering pipeline (with trail persistence + indirect rendering)
 3. Texture flow in effect chain
-4. Particle system rendering paths
-5. Metal shader organization
+4. Particle system architecture (simulation forces, behavior flags, render paths)
+5. Metal shader organization (2 shader libraries: rendering + simulation)
 6. Texture cache management
-7. Dependency graph (with coupling issues highlighted)
+7. Dependency graph (renderer + particle system dependencies)
 8. Recent changes timeline
 9. Effect chain ordering (current vs desired)
-10. Class relationships
+10. Class relationships (including SSKMetalTrailPass)
+11. Trail persistence data flow
+12. Indirect rendering pipeline (GPU-only, single command buffer)
 
 **Best for**: Quick visual understanding, presentations, identifying dependencies
 
@@ -116,12 +119,12 @@ Includes:
 ### Effect Chain Architecture
 - **Coordinator**: `SSKMetalRenderer` manages all effects
 - **Base Class**: `SSKMetalPass` defines interface for all effects
-- **Implementations**: `SSKMetalParticlePass`, `SSKMetalBlurPass`, `SSKMetalBloomPass`
-- **Chain Pattern**: `drawParticles() → applyBlur() → applyBloom() → endFrame()`
+- **Implementations**: `SSKMetalParticlePass`, `SSKMetalSpritePass`, `SSKMetalTrailPass`, `SSKMetalBlurPass`, `SSKMetalBloomPass`
+- **Chain Pattern**: `drawParticles()` / `drawSprites()` → [trail] → applyBlur() → applyBloom() → endFrame()
 
 ### Rendering Pipeline
 ```
-Particles (CPU/GPU) → Render to drawable → Optional blur → Optional bloom → Present
+Particles (CPU/GPU) → [Trail Persist] → Render to drawable → Optional blur → Optional bloom → Present
 ```
 
 ### Key Design Patterns
@@ -130,18 +133,22 @@ Particles (CPU/GPU) → Render to drawable → Optional blur → Optional bloom 
 3. **Separable Blur**: 2D blur done as 2x 1D passes (faster)
 4. **In-Place Processing**: Effects write back to same texture they read from
 5. **Optional Effects**: All post-processing effects are optional (can be disabled)
+6. **Feature-Flagged Simulation**: GPU simulation uses bitmask to enable/disable forces per-particle
+7. **Indirect Rendering**: GPU-side instance buffer building eliminates CPU readback
 
 ### Recent Improvements
-- **Async GPU**: Particle simulation no longer blocks CPU (commit be49dc9)
-- **FX Passes**: Refactored from monolithic renderer to pass-based (commit 2a174b8)
-- **Configurable Bloom**: Added intensity parameter (commit 02d119e)
+- **Curl Noise Force Field**: Divergence-free 2D simplex noise for organic swirling motion
+- **Attractor Points**: Up to 4 configurable attractors with inverse-square falloff
+- **Trail Persistence**: Persistent offscreen texture for long luminous trails (`SSKMetalTrailPass`)
+- **Color Gradient**: Half-float packed `endColor` for smooth lifetime color transitions
+- **Per-Particle Rotation**: Rotation velocity integrated on GPU, applied in vertex shader
+- **Ribbon Mode**: Connected trail strips via fully GPU-driven pipeline (no CPU readback)
+- **Indirect Rendering**: GPU-side instance building for large particle counts
+- **Simulation Shader Library**: Moved GPU simulation to dedicated `SSKSimulationShaders.metal`
+- **Flux Demo**: Showcases all new features (curl noise + attractors + trails + bloom)
 - **GPU Z-Depth**: Hardware-accelerated perspective depth effects in particle spawning
-  - Velocity, length, and color scaling based on z-depth
-  - All calculations performed in parallel on GPU
-  - See Rain screensaver demo for example usage
-- **Optimized Thread Groups**: Dynamic sizing based on GPU architecture (`threadExecutionWidth × 8`)
+- **Optimized Thread Groups**: Dynamic sizing based on GPU architecture
 - **Thread-Safe Free-List**: Serial queue for particle index management
-- **Fallback Kernel Compilation**: Automatic recompilation if shader missing
 
 ---
 
@@ -159,6 +166,12 @@ Particles (CPU/GPU) → Render to drawable → Optional blur → Optional bloom 
 - **Diagram**: ARCHITECTURE_DIAGRAMS.md → "Frame Rendering Pipeline"
 - **Guide**: EFFECT_IMPLEMENTATION_GUIDE.md → "Understanding Each Pass" → "Particle Pass"
 
+#### SSKMetalSpritePass
+- **Analysis**: ARCHITECTURE_ANALYSIS.md → "Testing Architecture" (SSKSpriteTests); renderer exposes `spritePass`
+- **Diagram**: ARCHITECTURE_DIAGRAMS.md → "Component Hierarchy" (added below)
+- **Guide**: Main README → "Using Metal-Accelerated Sprites"; `Demos/DVDLogoMetal/README.md`
+- **Code**: `../ScreenSaverKit/SSKMetalSpritePass.h/m`, `../ScreenSaverKit/Shaders/SSKSpriteShaders.metal`
+
 #### SSKMetalBlurPass
 - **Analysis**: ARCHITECTURE_ANALYSIS.md → "Effect Passes" → "SSKMetalBlurPass"
 - **Diagram**: ARCHITECTURE_DIAGRAMS.md → "Texture Flow", "Metal Shader Organization"
@@ -174,15 +187,25 @@ Particles (CPU/GPU) → Render to drawable → Optional blur → Optional bloom 
 - **Diagram**: ARCHITECTURE_DIAGRAMS.md → "Texture Cache Management"
 - **Guide**: EFFECT_IMPLEMENTATION_GUIDE.md → "Texture Cache: The Hidden Hero"
 
+#### SSKMetalTrailPass
+- **Analysis**: ARCHITECTURE_ANALYSIS.md → "Effect Passes" → "SSKMetalTrailPass"
+- **Diagram**: ARCHITECTURE_DIAGRAMS.md → "Trail Persistence Data Flow", "Component Hierarchy"
+- **Code**: `../ScreenSaverKit/SSKMetalTrailPass.h/m`
+
 #### SSKMetalPass (Abstract Base)
 - **Analysis**: ARCHITECTURE_ANALYSIS.md → "Current Architecture Overview" → "SSKMetalPass"
 - **Diagram**: ARCHITECTURE_DIAGRAMS.md → "Class Relationships"
 - **Guide**: EFFECT_IMPLEMENTATION_GUIDE.md → "Adding a New Effect" (Step 1)
 
-#### Testing Infrastructure
+#### SSKSimulationShaders
+- **Analysis**: ARCHITECTURE_ANALYSIS.md → "Metal Shader Libraries" → "SSKSimulationShaders"
+- **Diagram**: ARCHITECTURE_DIAGRAMS.md → "Metal Shader Organization"
+- **Code**: `../ScreenSaverKit/Shaders/SSKSimulationShaders.metal`
+
+#### Testing Infrastructure (145 tests)
 - **Analysis**: ARCHITECTURE_ANALYSIS.md → "Testing Architecture"
 - **Tests**: `../Tests/` directory with XCTest-based test suite
-- **Coverage**: Unit tests for all major components, Metal-specific tests with fallback
+- **Coverage**: Unit tests for all major components including trail pass, curl noise, attractors, rotation
 - **Performance**: See `PERFORMANCE_TESTING.md` for performance benchmarking tools
 
 ---
@@ -232,30 +255,41 @@ All examples include:
 - Metal Performance Optimization guides
 
 ### Related Source Files
-- `../ScreenSaverKit/SSKMetalRenderer.h` - Public API reference
-- `../ScreenSaverKit/Shaders/SSKParticleShaders.metal` - Shader implementations (includes z-depth kernels)
-- `../ScreenSaverKit/SSKParticleSystem.h` - Particle system API (includes spawn parameters)
-- `../Demos/RibbonFlow/RibbonFlowView.m` - Real-world usage example
+- `../ScreenSaverKit/SSKMetalRenderer.h` - Public API reference (trail persistence, indirect rendering, drawSprites)
+- `../ScreenSaverKit/SSKMetalTrailPass.h` - Trail persistence pass API
+- `../ScreenSaverKit/SSKMetalParticlePass.h` - Particle pass API (ribbon mode, indirect)
+- `../ScreenSaverKit/SSKMetalSpritePass.h` - Sprite pass API (instanced 2D sprites)
+- `../ScreenSaverKit/Shaders/SSKParticleShaders.metal` - Rendering shaders (indirect, ribbon, trail fade)
+- `../ScreenSaverKit/Shaders/SSKSpriteShaders.metal` - Sprite vertex/fragment shaders
+- `../ScreenSaverKit/Shaders/SSKSimulationShaders.metal` - GPU simulation (curl noise, attractors, color gradient)
+- `../ScreenSaverKit/SSKParticleSystem.h` - Particle system API (noise, attractors, spawn parameters)
+- `../ScreenSaverKit/SSKSprite.h` - Sprite model (position, size, animation, etc.)
+- `../Demos/Flux/FluxView.m` - Advanced usage (curl noise + attractors + trails + bloom)
+- `../Demos/RibbonFlow/RibbonFlowView.m` - Ribbon mode usage example
 - `../Demos/Rain/RainView.m` - Z-depth implementation example
+- `../Demos/DVDLogoMetal/` - Sprite rendering example
 
 ---
 
 ## Document Maintenance Notes
 
-These documents were last updated: **2025-01-XX**
+These documents were last updated: **2026-02-21**. Architecture validated **2025-01-09**: component list, renderer properties, shader files, test count (145 tests, 6 suites), Demos (Flux, RibbonFlow, Rain, DVDLogoMetal), and sprite pass added to diagrams/index/guide.
 
 Based on codebase state:
 - Current branch: `main`
-- Latest features: GPU-accelerated z-depth, optimized particle spawning
-- Key refactor: `2a174b8` (FX Passes architecture)
+- Latest features: Curl noise, attractors, trail persistence, ribbon mode, indirect rendering
+- Key refactors: `2a174b8` (FX Passes architecture), 8-phase particle system expansion
 
 The documentation covers:
-- All effect passes currently in the system
+- All effect passes currently in the system (particle, trail, blur, bloom)
+- Simulation shader library (curl noise, attractors, color gradient)
 - Current architectural patterns and issues
-- Implementation patterns and examples
+- Implementation patterns and examples (including Flux-style advanced usage)
 - Recent optimizations and improvements
 - GPU-accelerated z-depth support for perspective effects
 - Particle spawn optimizations (thread groups, async spawn, fallback compilation)
+- Indirect rendering and ribbon mode GPU pipelines
+- 145 tests across 6 test suites
 
 If you modify the rendering system, please update:
 1. Relevant diagram in ARCHITECTURE_DIAGRAMS.md

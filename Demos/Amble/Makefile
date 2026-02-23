@@ -3,9 +3,9 @@ KIT_DIR := $(abspath $(CURRENT_DIR)/../..)
 KIT_SOURCE_DIR := $(KIT_DIR)/ScreenSaverKit
 KIT_INCLUDE := -I$(KIT_DIR)
 
-SCREENSAVER_NAME ?= PerformanceBenchmarkSaver
-BUNDLE_ID ?= com.example.screenSaverKit.performanceBenchmark
-PRINCIPAL_CLASS ?= PerformanceBenchmarkView
+SCREENSAVER_NAME ?= AmbleSaver
+BUNDLE_ID ?= com.greggant.screensaver.amble
+PRINCIPAL_CLASS ?= AmbleView
 BUILD_DIR ?= $(CURRENT_DIR)/Build
 
 BUNDLE_DIR := $(BUILD_DIR)/$(SCREENSAVER_NAME).saver
@@ -26,13 +26,26 @@ FRAMEWORKS := -framework Cocoa -framework ScreenSaver -framework QuartzCore -fra
 METALC := xcrun -sdk macosx metal -fmodules-cache-path=$(MODULE_CACHE_DIR)
 METALLIB := xcrun -sdk macosx metallib
 
-SHADER_DIR := $(KIT_DIR)/ScreenSaverKit/Shaders
-SHADER_SOURCES := $(SHADER_DIR)/SSKParticleShaders.metal
-SHADER_AIRS := $(SHADER_BUILD_DIR)/SSKParticleShaders.air
-SHADER_METALLIB := $(RESOURCES_DIR)/SSKParticleShaders.metallib
+# Kit shaders (needed by sprite pass, bloom pass, etc.)
+KIT_SHADER_DIR := $(KIT_DIR)/ScreenSaverKit/Shaders
+PARTICLE_SHADER_AIR := $(SHADER_BUILD_DIR)/SSKParticleShaders.air
+PARTICLE_SHADER_METALLIB := $(RESOURCES_DIR)/SSKParticleShaders.metallib
+SPRITE_SHADER_AIR := $(SHADER_BUILD_DIR)/SSKSpriteShaders.air
+SPRITE_SHADER_METALLIB := $(RESOURCES_DIR)/SSKSpriteShaders.metallib
+
+# Amble-specific shaders
+FLUID_SHADER_AIR := $(SHADER_BUILD_DIR)/AmbleFluidShaders.air
+LINE_SHADER_AIR := $(SHADER_BUILD_DIR)/AmbleLineShaders.air
+FLUID_SHADER_METALLIB := $(RESOURCES_DIR)/AmbleFluidShaders.metallib
+LINE_SHADER_METALLIB := $(RESOURCES_DIR)/AmbleLineShaders.metallib
+
+ALL_METALLIBS := $(PARTICLE_SHADER_METALLIB) $(SPRITE_SHADER_METALLIB) $(FLUID_SHADER_METALLIB) $(LINE_SHADER_METALLIB)
 
 SOURCES := \
-	$(CURRENT_DIR)/PerformanceBenchmarkView.m \
+	$(CURRENT_DIR)/AmbleView.m \
+	$(CURRENT_DIR)/AmbleFluidSimulation.m \
+	$(CURRENT_DIR)/AmbleLineRenderer.m \
+	$(CURRENT_DIR)/AmblePalettes.m \
 	$(KIT_SOURCE_DIR)/SSKScreenSaverView.m \
 	$(KIT_SOURCE_DIR)/SSKAssetManager.m \
 	$(KIT_SOURCE_DIR)/SSKAnimationClock.m \
@@ -47,24 +60,28 @@ SOURCES := \
 	$(KIT_SOURCE_DIR)/SSKMetalTextureCache.m \
 	$(KIT_SOURCE_DIR)/SSKMetalEffectStage.m \
 	$(KIT_SOURCE_DIR)/SSKMetalRenderDiagnostics.m \
-	$(KIT_SOURCE_DIR)/SSKMetalSpritePass.m \
 	$(KIT_SOURCE_DIR)/SSKMetalPass.m \
 	$(KIT_SOURCE_DIR)/SSKMetalParticlePass.m \
+	$(KIT_SOURCE_DIR)/SSKMetalSpritePass.m \
+	$(KIT_SOURCE_DIR)/SSKSprite.m \
 	$(KIT_SOURCE_DIR)/SSKMetalBloomPass.m \
 	$(KIT_SOURCE_DIR)/SSKMetalBlurPass.m \
 	$(KIT_SOURCE_DIR)/SSKMetalTrailPass.m \
-	$(KIT_SOURCE_DIR)/SSKSprite.m \
-	$(KIT_SOURCE_DIR)/SSKSpriteAnimationSequence.m \
-	$(KIT_SOURCE_DIR)/SSKLayerEffects.m
+	$(KIT_SOURCE_DIR)/SSKLayerEffects.m \
+	$(KIT_SOURCE_DIR)/SSKPreferenceBinder.m \
+	$(KIT_SOURCE_DIR)/SSKConfigurationWindowController.m \
+	$(KIT_SOURCE_DIR)/SSKColorPalette.m \
+	$(KIT_SOURCE_DIR)/SSKPaletteManager.m \
+	$(KIT_SOURCE_DIR)/SSKColorUtilities.m
 
 INFO_PLIST := $(CURRENT_DIR)/Info.plist
 EXECUTABLE := $(MACOS_DIR)/$(SCREENSAVER_NAME)
 
 .PHONY: all clean install run
 
-all: $(EXECUTABLE) $(SHADER_METALLIB) $(THUMBNAIL_PNG) $(THUMBNAIL_PNG_2X)
+all: $(EXECUTABLE) $(ALL_METALLIBS) $(THUMBNAIL_PNG) $(THUMBNAIL_PNG_2X)
 
-$(EXECUTABLE): $(SOURCES) $(CONTENTS_DIR)/Info.plist $(SHADER_METALLIB) | $(MACOS_DIR)
+$(EXECUTABLE): $(SOURCES) $(CONTENTS_DIR)/Info.plist $(ALL_METALLIBS) | $(MACOS_DIR)
 	@mkdir -p $(MODULE_CACHE_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) $(FRAMEWORKS) -bundle -o $@ $(SOURCES)
 
@@ -81,11 +98,35 @@ $(MACOS_DIR):
 $(SHADER_BUILD_DIR):
 	@mkdir -p $(SHADER_BUILD_DIR)
 
-$(SHADER_BUILD_DIR)/%.air: $(SHADER_DIR)/%.metal | $(SHADER_BUILD_DIR)
+# Kit shaders
+$(SHADER_BUILD_DIR)/SSKParticleShaders.air: $(KIT_SHADER_DIR)/SSKParticleShaders.metal | $(SHADER_BUILD_DIR)
 	@mkdir -p $(MODULE_CACHE_DIR)
 	$(METALC) -c $< -o $@
 
-$(RESOURCES_DIR)/%.metallib: $(SHADER_BUILD_DIR)/%.air | $(MACOS_DIR)
+$(RESOURCES_DIR)/SSKParticleShaders.metallib: $(PARTICLE_SHADER_AIR) | $(MACOS_DIR)
+	$(METALLIB) $< -o $@
+
+$(SHADER_BUILD_DIR)/SSKSpriteShaders.air: $(KIT_SHADER_DIR)/SSKSpriteShaders.metal | $(SHADER_BUILD_DIR)
+	@mkdir -p $(MODULE_CACHE_DIR)
+	$(METALC) -c $< -o $@
+
+$(RESOURCES_DIR)/SSKSpriteShaders.metallib: $(SPRITE_SHADER_AIR) | $(MACOS_DIR)
+	$(METALLIB) $< -o $@
+
+# Amble fluid simulation shaders
+$(SHADER_BUILD_DIR)/AmbleFluidShaders.air: $(CURRENT_DIR)/AmbleFluidShaders.metal | $(SHADER_BUILD_DIR)
+	@mkdir -p $(MODULE_CACHE_DIR)
+	$(METALC) -c $< -o $@
+
+$(RESOURCES_DIR)/AmbleFluidShaders.metallib: $(FLUID_SHADER_AIR) | $(MACOS_DIR)
+	$(METALLIB) $< -o $@
+
+# Amble line rendering shaders
+$(SHADER_BUILD_DIR)/AmbleLineShaders.air: $(CURRENT_DIR)/AmbleLineShaders.metal | $(SHADER_BUILD_DIR)
+	@mkdir -p $(MODULE_CACHE_DIR)
+	$(METALC) -c $< -o $@
+
+$(RESOURCES_DIR)/AmbleLineShaders.metallib: $(LINE_SHADER_AIR) | $(MACOS_DIR)
 	$(METALLIB) $< -o $@
 
 $(THUMBNAIL_PNG): $(THUMBNAIL_SRC) | $(MACOS_DIR)
@@ -103,5 +144,3 @@ install: all
 
 run: install
 	open -a ScreenSaverEngine "$(BUNDLE_DIR)"
-
-

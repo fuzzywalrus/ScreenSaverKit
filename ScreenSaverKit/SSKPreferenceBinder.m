@@ -237,6 +237,9 @@
         }
     }
     [self.defaults synchronize];
+    if (self.changeHandler && binding.key.length > 0) {
+        self.changeHandler(binding.key);
+    }
 }
 
 @end

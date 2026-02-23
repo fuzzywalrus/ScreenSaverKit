@@ -8,6 +8,8 @@ struct InstanceData {
     float length;
     float4 color;
     float softness;
+    float rotation;
+    float padding[2];
 };
 
 struct ParticleVertexOut {
@@ -27,6 +29,13 @@ vertex ParticleVertexOut particleVertex(uint vertexID [[vertex_id]],
     float2 forward = normalize(data.direction);
     if (!isfinite(forward.x) || !isfinite(forward.y)) {
         forward = float2(1.0, 0.0);
+    }
+    // Apply per-particle rotation on top of velocity direction
+    if (abs(data.rotation) > 0.0001f) {
+        float cosR = cos(data.rotation);
+        float sinR = sin(data.rotation);
+        forward = float2(forward.x * cosR - forward.y * sinR,
+                         forward.x * sinR + forward.y * cosR);
     }
     float2 right = float2(-forward.y, forward.x);
     float2 quad = quadVertices[vertexID];
@@ -78,8 +87,8 @@ struct ParticleState {
     float userScalar;
     uint behaviorFlags;
     uint alive;
-    uint padding0;
-    uint padding1;
+    float endColor_rg;      // packed half2: r in high 16 bits, g in low 16 bits
+    float endColor_ba;      // packed half2: b in high 16 bits, a in low 16 bits
 };
 
 // SpawnParameters structure must match SSKParticleSpawnParameters (with alignment)
@@ -106,6 +115,8 @@ struct SpawnParameters {
     float zDepthScale;
     float lengthMultiplier;
     float padding2;         // Align to 16 bytes
+    float4 endColorMin;
+    float4 endColorMax;
 };
 
 // Simple hash-based random number generator for GPU
@@ -122,6 +133,19 @@ static inline float2 hashRandom2(uint seed) {
 
 static inline float4 hashRandom4(uint seed) {
     return float4(hashRandom(seed), hashRandom(seed + 1), hashRandom(seed + 2), hashRandom(seed + 3));
+}
+
+// Pack a float4 color into two floats using half-float bit packing.
+// Each float stores two half-float values (high 16 bits + low 16 bits).
+static inline void packEndColor(float4 color, thread float &out_rg, thread float &out_ba) {
+    half r = half(color.x);
+    half g = half(color.y);
+    half b = half(color.z);
+    half a = half(color.w);
+    uint rg_bits = (uint(as_type<ushort>(r)) << 16) | uint(as_type<ushort>(g));
+    uint ba_bits = (uint(as_type<ushort>(b)) << 16) | uint(as_type<ushort>(a));
+    out_rg = as_type<float>(rg_bits);
+    out_ba = as_type<float>(ba_bits);
 }
 
 // Generate random position based on spawn region type
@@ -241,7 +265,12 @@ kernel void initializeParticles(device ParticleState *particles [[buffer(0)]],
     
     // Set behavior options
     state.behaviorFlags = params.behaviorOptions;
-    
+
+    // Generate end color for gradient behavior
+    float4 endColorRnd = hashRandom4(id * 7919 + 89012);
+    float4 endColor = mix(params.endColorMin, params.endColorMax, endColorRnd);
+    packEndColor(endColor, state.endColor_rg, state.endColor_ba);
+
     // Write state to particle buffer
     particles[particleIndex] = state;
 }
@@ -339,6 +368,19 @@ kernel void bloomCompositeKernel(texture2d<float, access::sample> bloomTex [[tex
     destination.write(dest, gid);
 }
 
+// --- Trail persistence fade kernel ---
+
+kernel void trailFadeKernel(texture2d<float, access::read_write> trail [[texture(0)]],
+                            constant float &fadeRate [[buffer(0)]],
+                            uint2 gid [[thread_position_in_grid]]) {
+    if (gid.x >= trail.get_width() || gid.y >= trail.get_height()) {
+        return;
+    }
+    float4 color = trail.read(gid);
+    color *= (1.0f - fadeRate);
+    trail.write(color, gid);
+}
+
 // --- GPU-side instance buffer building for indirect rendering ---
 
 // userScalar mode thresholds — must match constants in SSKMetalParticlePass.m.
@@ -398,6 +440,79 @@ kernel void buildInstanceData(device ParticleState *particles [[buffer(0)]],
         softness = 0.0f;
     }
     data.softness = softness;
+    data.rotation = state.rotation;
 
     instances[instanceIndex] = data;
+}
+
+// --- Ribbon mode: connect adjacent alive particles into elongated quad strips ---
+
+// Pass 1: Compact alive particle indices into a sorted list.
+kernel void compactAliveIndices(device ParticleState *particles [[buffer(0)]],
+                                device uint *aliveIndices [[buffer(1)]],
+                                device atomic_uint *aliveCounter [[buffer(2)]],
+                                constant uint &capacity [[buffer(3)]],
+                                uint id [[thread_position_in_grid]]) {
+    if (id >= capacity) { return; }
+    if (particles[id].alive == 0u) { return; }
+    uint slot = atomic_fetch_add_explicit(aliveCounter, 1u, memory_order_relaxed);
+    aliveIndices[slot] = id;
+}
+
+// Pass 2a: Prepare indirect draw arguments for ribbon rendering.
+// Reads the alive counter (from pass 1) and writes (aliveCount - 1) as instanceCount.
+kernel void prepareRibbonIndirectArgs(device atomic_uint *aliveCounter [[buffer(0)]],
+                                       device uint *indirectArgs [[buffer(1)]],
+                                       uint id [[thread_position_in_grid]]) {
+    if (id != 0) { return; }
+    uint aliveCount = atomic_load_explicit(aliveCounter, memory_order_relaxed);
+    uint segments = (aliveCount > 1u) ? (aliveCount - 1u) : 0u;
+    indirectArgs[0] = 4u;       // vertexCount (triangle strip quad)
+    indirectArgs[1] = segments; // instanceCount
+    indirectArgs[2] = 0u;       // vertexStart
+    indirectArgs[3] = 0u;       // baseInstance
+}
+
+// Pass 2b: Build ribbon instance data connecting adjacent particles.
+// Reads aliveCount from the atomic counter buffer (populated by pass 1).
+kernel void buildRibbonInstanceData(device ParticleState *particles [[buffer(0)]],
+                                     device InstanceData *instances [[buffer(1)]],
+                                     device uint *aliveIndices [[buffer(2)]],
+                                     device atomic_uint *aliveCounter [[buffer(3)]],
+                                     uint id [[thread_position_in_grid]]) {
+    uint aliveCount = atomic_load_explicit(aliveCounter, memory_order_relaxed);
+    if (id + 1 >= aliveCount) { return; }
+
+    uint idxA = aliveIndices[id];
+    uint idxB = aliveIndices[id + 1];
+    ParticleState stateA = particles[idxA];
+    ParticleState stateB = particles[idxB];
+
+    float2 delta = stateB.position - stateA.position;
+    float segmentLength = length(delta);
+    if (segmentLength < 0.001f) { return; }
+
+    float2 midpoint = (stateA.position + stateB.position) * 0.5f;
+    float2 dir = delta / segmentLength;
+
+    // Width tapers based on average lifetime fraction (thick at head, thin at tail)
+    float normA = (stateA.maxLife > 0.0f) ? clamp(stateA.life / stateA.maxLife, 0.0f, 1.0f) : 0.0f;
+    float normB = (stateB.maxLife > 0.0f) ? clamp(stateB.life / stateB.maxLife, 0.0f, 1.0f) : 0.0f;
+    float avgNorm = (normA + normB) * 0.5f;
+    float taper = 1.0f - avgNorm * 0.7f; // Taper to 30% at end of life
+    float width = max(1.0f, (stateA.size + stateB.size) * 0.5f) * taper;
+
+    // Interpolate color
+    float4 color = mix(stateA.color, stateB.color, 0.5f);
+
+    InstanceData data;
+    data.position = midpoint;
+    data.direction = dir;
+    data.width = width;
+    data.length = segmentLength;
+    data.color = color;
+    data.softness = 0.0f;
+    data.rotation = 0.0f;
+
+    instances[id] = data;
 }

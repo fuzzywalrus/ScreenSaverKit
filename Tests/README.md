@@ -42,23 +42,58 @@ Tests color palette functionality:
 - Empty and single-color palettes
 
 ### SSKParticleSystemTests
-Comprehensive tests for the particle system:
+Comprehensive tests for the particle system (51 tests):
 - Initialization and capacity limits
 - Particle spawning (single, multiple, beyond capacity)
 - Particle lifecycle (spawn, update, expire)
 - Index management and reuse
 - Reset functionality
-- Behavior options (fade alpha, fade size)
+- Behavior options (fade alpha, fade size, color gradient, bitmask combinations)
+- Color gradient behavior and CPU/GPU parity
+- Color gradient with nil endColor fallback
+- Color gradient GPU spawn with endColorMin/endColorMax
+- Curl noise force field deflection
+- Curl noise default properties and configuration
+- Curl noise zero-strength produces no force
+- Attractor point forces (single, multiple, max count)
+- Attractor strength effect on displacement
+- Attractor clearing
+- Curl noise and attractors combined
+- Per-particle rotation velocity integration
+- Rotation property preservation (zero velocity)
+- Ribbon mode enabled property
 - Metal simulation vs CPU simulation
 - Batch operations
 - GPU spawn parameters
 
 ### SSKMetalRendererTests
-Tests Metal renderer initialization:
-- Device creation
-- Texture cache
-- Frame begin/end
+Tests Metal renderer initialization and configuration (8 tests):
+- Device creation (with and without pre-set device)
+- Texture cache availability
+- Frame begin/end lifecycle
+- Effect stage registration and unregistration
+- Trail persistence defaults (disabled, fade rate 0.05)
+- Trail persistence configuration (enable, custom fade rate)
+- Indirect rendering property toggle
 - Graceful fallback when Metal unavailable
+
+### SSKMetalPassTests
+Tests for FX passes (12 tests):
+- Trail pass initialization with device and library
+- Trail texture creation, reuse (same size), and recreation (different size)
+- Trail texture zero-size returns nil
+- Trail fade compute kernel encoding
+- Trail blit encoder
+- Particle pass ribbon mode property
+- Particle pass length multiplier property
+- Noop pass setup/encode (base class contract)
+
+### SSKSpriteTests
+Tests sprite and sprite pass:
+- SSKSprite defaults, properties, texture creation/invalidation
+- SSKMetalSpriteData and SSKMetalSpritePass setup/encode
+- Z-sorting, culling, scale/flip, animation sequence
+- Texture rect helpers and viewportPixels API (current API; deprecated viewportSize variants are not used in tests)
 
 ## Writing New Tests
 

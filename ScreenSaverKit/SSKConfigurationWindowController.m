@@ -26,6 +26,14 @@
     if ((self = [super initWithWindow:window])) {
         _saverView = saverView;
         _preferenceBinder = [[SSKPreferenceBinder alloc] initWithDefaults:saverView.preferences];
+        __weak typeof(self) weakSelf = self;
+        _preferenceBinder.changeHandler = ^(NSString *key) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf || !strongSelf.saverView) { return; }
+            NSDictionary<NSString *, id> *prefs = [strongSelf.saverView currentPreferences];
+            NSSet<NSString *> *changedKeys = key.length ? [NSSet setWithObject:key] : [NSSet setWithArray:prefs.allKeys];
+            [strongSelf.saverView preferencesDidChange:prefs changedKeys:changedKeys];
+        };
         [self setupContentWithTitle:title subtitle:subtitle];
     }
     return self;
@@ -112,6 +120,8 @@
 
 - (void)handleCancel:(id)sender {
     [self.preferenceBinder restoreInitialValues];
+    NSDictionary<NSString *, id> *prefs = [self.saverView currentPreferences];
+    [self.saverView preferencesDidChange:prefs changedKeys:[NSSet setWithArray:prefs.allKeys]];
     [NSApp endSheet:self.window returnCode:NSModalResponseCancel];
     [self.window orderOut:nil];
 }

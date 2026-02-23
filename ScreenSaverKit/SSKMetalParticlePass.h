@@ -14,6 +14,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// Indicates whether GPU-side indirect rendering is available.
 @property (nonatomic, readonly) BOOL supportsIndirectRendering;
 
+/// When YES, particles are rendered as connected ribbon strips.
+@property (nonatomic) BOOL ribbonModeEnabled;
+
 - (BOOL)setupWithDevice:(id<MTLDevice>)device library:(id<MTLLibrary>)library;
 
 - (BOOL)encodeParticles:(NSArray<SSKParticle *> *)particles

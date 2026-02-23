@@ -58,6 +58,7 @@ stop_process() {
 
 stop_process "legacyScreenSaver"
 stop_process "WallpaperAgent"
+stop_process "WallpaperVideoExtension"
 stop_process "ScreenSaverEngine"
 stop_process "cfprefsd"
 

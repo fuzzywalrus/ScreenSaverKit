@@ -6,14 +6,19 @@ This guide explains how to understand, extend, and work with the effect chaining
 
 | File | Purpose |
 |------|---------|
-| `SSKMetalRenderer.h/m` | Main coordinator; manages passes and frame lifecycle |
+| `SSKMetalRenderer.h/m` | Main coordinator; manages passes, frame lifecycle, trail persistence |
 | `SSKMetalPass.h/m` | Abstract base class for all FX passes |
-| `SSKMetalParticlePass.h/m` | Particle rendering (render pipeline) |
+| `SSKMetalParticlePass.h/m` | Particle rendering: direct, indirect, and ribbon modes |
+| `SSKMetalSpritePass.h/m` | 2D sprite rendering: instanced quads, animation, culling |
+| `SSKMetalTrailPass.h/m` | Trail persistence: persistent offscreen texture with fade kernel |
 | `SSKMetalBlurPass.h/m` | Gaussian blur (compute pipeline) |
 | `SSKMetalBloomPass.h/m` | Bloom/glow effect (compute pipeline) |
 | `SSKMetalTextureCache.h/m` | Texture pooling for intermediate renders |
-| `SSKParticleShaders.metal` | All Metal shaders and compute kernels |
+| `SSKParticleShaders.metal` | Rendering shaders, instance building, ribbon, trail fade kernels |
+| `SSKSpriteShaders.metal` | Sprite vertex/fragment shaders (position, UV, tint) |
+| `SSKSimulationShaders.metal` | GPU simulation: physics, curl noise, attractors, color gradient |
 | `SSKParticleSystem.h/m` | CPU-side particle management and simulation |
+| `SSKSprite.h/m` | Sprite model (position, size, scale, animation, z-order) |
 | `SSKMetalParticleRenderer.h/m` | Convenience wrapper for particle-only workflows |
 
 ---
@@ -107,6 +112,78 @@ This guide explains how to understand, extend, and work with the effect chaining
 }
 ```
 
+### Example: Trail Persistence (Luminous Streams)
+
+```objc
+- (void)renderMetalFrame:(SSKMetalRenderer *)renderer deltaTime:(NSTimeInterval)dt {
+    [self.particleSystem advanceBy:dt];
+    NSArray<SSKParticle *> *particles = [self.particleSystem aliveParticlesSnapshot];
+
+    // Trail persistence: particles leave slowly fading trails
+    // (configured once in setup, not per-frame)
+    // renderer.trailPersistenceEnabled = YES;
+    // renderer.trailFadeRate = 0.02;
+
+    [renderer drawParticles:particles
+                  blendMode:SSKParticleBlendModeAdditive
+               viewportSize:self.bounds.size];
+
+    if (self.bloomIntensity > 0.05) {
+        [renderer applyBloom:self.bloomIntensity];
+    }
+}
+```
+
+When trail persistence is enabled, the renderer automatically:
+1. Fades the persistent trail texture by `trailFadeRate` each frame (compute kernel)
+2. Redirects particle rendering to the trail texture
+3. Blits the trail texture to the drawable before post-processing
+
+### Example: Curl Noise + Attractors (Flux-Style)
+
+```objc
+// Setup (once)
+self.particleSystem.noiseScale = 0.002;
+self.particleSystem.noiseStrength = 300.0;
+self.particleSystem.noiseSpeed = 0.3;
+self.particleSystem.globalDamping = 0.3;
+
+[self.particleSystem setAttractorAtIndex:0 position:center strength:5000.0];
+
+self.metalRenderer.trailPersistenceEnabled = YES;
+self.metalRenderer.trailFadeRate = 0.02;
+
+// Spawn (continuous emission)
+[system spawnParticles:8 initializer:^(SSKParticle *p) {
+    p.behaviorOptions = SSKParticleBehaviorOptionFadeAlpha
+                      | SSKParticleBehaviorOptionColorGradient
+                      | SSKParticleBehaviorOptionCurlNoise
+                      | SSKParticleBehaviorOptionAttractors;
+    p.color = brightColor;
+    // endColor set via GPU spawn parameters (endColorMin/endColorMax)
+}];
+```
+
+### Example: Indirect Rendering (Large Particle Counts)
+
+For systems with many particles, indirect rendering avoids CPU readback of alive particle data:
+
+```objc
+- (void)renderMetalFrame:(SSKMetalRenderer *)renderer deltaTime:(NSTimeInterval)dt {
+    [self.particleSystem advanceBy:dt];
+
+    // GPU builds instance buffer directly — no CPU snapshot needed
+    [renderer drawParticlesIndirect:self.particleSystem
+                          blendMode:self.particleSystem.blendMode
+                       viewportSize:self.bounds.size];
+}
+```
+
+The indirect pipeline runs three compute passes in a single command buffer:
+1. `compactAliveIndices` — scan particle states, build alive index list
+2. `prepareIndirectArgs` — write `MTLDrawPrimitivesIndirectArguments`
+3. `buildInstanceData` — populate instance buffer from alive particles
+
 ---
 
 ## Understanding Each Pass
@@ -130,6 +207,8 @@ typedef struct {
     float length;                // Trail length (calculated from z-depth or length multiplier)
     vector_float4 color;         // RGBA
     float softness;              // Edge feathering (from particle.userScalar, 0 for z-depth)
+    float rotation;              // Per-particle rotation in radians (applied in vertex shader)
+    float padding[2];            // Alignment
 } SSKMetalInstanceData;
 ```
 
@@ -223,6 +302,39 @@ renderer.bloomBlurSigma = 3.0;    // Blur spread
 float bloomLuminance(float3 color) {
     return dot(color, float3(0.2126f, 0.7152f, 0.0722f));  // ITU-R BT.709
 }
+```
+
+### 4. Trail Pass (Persistent Offscreen Texture)
+
+**What it does**: Maintains a persistent offscreen texture that accumulates particle renders over time, producing long luminous trails.
+
+**Key concepts**:
+- Owns its own texture (NOT in the texture cache — must survive trimming)
+- Texture allocated lazily on first use, recreated if drawable size changes
+- Each frame: fade previous contents via compute kernel, then blit new content on top
+
+**Fade kernel**:
+```metal
+// Multiplies all pixels by (1.0 - fadeRate) each frame
+kernel void trailFadeKernel(texture2d<float, access::read_write> tex,
+                            constant float &fadeRate,
+                            uint2 gid) {
+    float4 color = tex.read(gid);
+    color *= (1.0 - fadeRate);
+    tex.write(color, gid);
+}
+```
+
+**Integration flow**:
+1. Renderer calls `fadeWithRate:commandBuffer:` — compute kernel fades trail texture
+2. Particles render to trail texture (instead of directly to drawable)
+3. Renderer calls `blitTo:destination:commandBuffer:` — copies trail to drawable
+4. Post-processing (blur, bloom) applies to drawable as usual
+
+**Configuration**:
+```objc
+renderer.trailPersistenceEnabled = YES;   // Enable the trail pass
+renderer.trailFadeRate = 0.02;            // Slow fade (0.0 = none, 1.0 = instant)
 ```
 
 ---
@@ -610,6 +722,13 @@ NSLog(@"Cache has %lu buckets", (unsigned long)self.textureCache.textureBuckets.
 | Z-depth not visible | Ensure `zDepthEnabled = 1u` in spawn parameters, check `lengthMultiplier` is set on particle pass |
 | GPU spawn returns 0 | Check Metal device available, verify shader library loaded, check particle capacity |
 | Z-depth particles too slow | Adjust `zDepthScale` to reduce minimum z-depth (higher scale = more distant drops) |
+| Trails not visible | Set `trailPersistenceEnabled = YES` and `trailFadeRate` to a small value (e.g. 0.02) |
+| Trails flash or strobe | `trailFadeRate` too high — try 0.01–0.05 for smooth results |
+| Curl noise has no effect | Set `noiseStrength > 0` on the system AND `SSKParticleBehaviorOptionCurlNoise` on particles |
+| Attractors ignored | Call `setAttractorAtIndex:position:strength:` AND set `SSKParticleBehaviorOptionAttractors` on particles |
+| Color gradient not interpolating | Set `SSKParticleBehaviorOptionColorGradient` and provide `endColorMin`/`endColorMax` in spawn params |
+| Ribbon mode renders quads | Enable `ribbonModeEnabled` on the system AND `SSKParticleBehaviorOptionRibbonMode` on particles |
+| Indirect rendering crashes | Ensure `SSKSimulationShaders.metallib` is included in the build and the particle system has a valid Metal device |
 
 ---
 
@@ -722,8 +841,10 @@ See `ARCHITECTURE_ANALYSIS.md` → "Testing Architecture" for more details.
 
 - `ARCHITECTURE_ANALYSIS.md` – Deep dive into design, includes testing architecture
 - `ARCHITECTURE_DIAGRAMS.md` – Visual component relationships
-- `SSKParticleSystem.md` – Detailed particle system docs
+- `SSKParticleSystem.md` – Detailed particle system docs (cheat sheet)
 - `tutorial.md` – End-to-end saver creation guide
+- `Demos/Flux/FluxView.m` – Curl noise + attractors + trails + bloom example
+- `Demos/RibbonFlow/RibbonFlowView.m` – Ribbon mode example
 - `Demos/Rain/README.md` – Z-depth implementation example
-- `../Tests/README.md` – Test suite documentation
+- `../Tests/README.md` – Test suite documentation (145 tests)
 - `PERFORMANCE_TESTING.md` – Performance benchmarking guide

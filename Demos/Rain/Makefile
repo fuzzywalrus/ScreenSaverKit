@@ -29,6 +29,7 @@ SOURCES := \
 	$(KIT_SOURCE_DIR)/SSKMetalParticlePass.m \
 	$(KIT_SOURCE_DIR)/SSKMetalBloomPass.m \
 	$(KIT_SOURCE_DIR)/SSKMetalBlurPass.m \
+	$(KIT_SOURCE_DIR)/SSKMetalTrailPass.m \
 	$(KIT_SOURCE_DIR)/SSKMetalEffectStage.m \
 	$(KIT_SOURCE_DIR)/SSKMetalSpritePass.m \
 	$(KIT_SOURCE_DIR)/SSKMetalRenderDiagnostics.m \

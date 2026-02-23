@@ -21,7 +21,8 @@ typedef struct {
     float length;
     vector_float4 color;
     float softness;
-    float padding[3];
+    float rotation;
+    float padding[2];
 } SSKMetalInstanceData;
 
 @interface SSKMetalParticlePass ()
@@ -38,6 +39,14 @@ typedef struct {
 @property (nonatomic, strong) id<MTLBuffer> indirectArgsBuffer;
 @property (nonatomic, strong) id<MTLBuffer> instanceCounterBuffer;
 @property (nonatomic) BOOL supportsIndirectRendering;
+
+// Ribbon mode resources
+@property (nonatomic, strong, nullable) id<MTLComputePipelineState> compactAlivePipeline;
+@property (nonatomic, strong, nullable) id<MTLComputePipelineState> prepareRibbonArgsPipeline;
+@property (nonatomic, strong, nullable) id<MTLComputePipelineState> buildRibbonPipeline;
+@property (nonatomic, strong, nullable) id<MTLBuffer> aliveIndicesBuffer;
+@property (nonatomic, strong, nullable) id<MTLBuffer> aliveCounterBuffer;
+@property (nonatomic) BOOL supportsRibbonRendering;
 @end
 
 @implementation SSKMetalParticlePass
@@ -131,6 +140,7 @@ typedef struct {
             softness = 0.0f;
         }
         data.softness = softness;
+        data.rotation = (float)particle.rotation;
         instances[index++] = data;
     }
 
@@ -174,6 +184,18 @@ typedef struct {
                      clearColor:(MTLClearColor)clearColor {
     if (!commandBuffer || !renderTarget || !particleBuffer) {
         return NO;
+    }
+
+    // Route to ribbon path when ribbon mode is enabled
+    if (self.ribbonModeEnabled && self.supportsRibbonRendering) {
+        return [self encodeParticlesIndirectRibbon:particleBuffer
+                                         capacity:capacity
+                                        blendMode:blendMode
+                                     viewportSize:viewportSize
+                                    commandBuffer:commandBuffer
+                                     renderTarget:renderTarget
+                                       loadAction:loadAction
+                                       clearColor:clearColor];
     }
 
     // Fallback to CPU path if indirect rendering not supported
@@ -400,6 +422,146 @@ typedef struct {
     if ([SSKDiagnostics isEnabled]) {
         [SSKDiagnostics log:@"SSKMetalParticlePass: indirect rendering enabled."];
     }
+
+    // Setup ribbon mode pipelines (optional — continues without if shaders missing)
+    [self setupRibbonRendering];
+}
+
+- (void)setupRibbonRendering {
+    NSError *error = nil;
+    id<MTLFunction> compactFunc = [self.library newFunctionWithName:@"compactAliveIndices"];
+    id<MTLFunction> prepareArgsFunc = [self.library newFunctionWithName:@"prepareRibbonIndirectArgs"];
+    id<MTLFunction> ribbonFunc = [self.library newFunctionWithName:@"buildRibbonInstanceData"];
+    if (!compactFunc || !prepareArgsFunc || !ribbonFunc) {
+        self.supportsRibbonRendering = NO;
+        return;
+    }
+
+    self.compactAlivePipeline = [self.device newComputePipelineStateWithFunction:compactFunc error:&error];
+    if (!self.compactAlivePipeline) {
+        self.supportsRibbonRendering = NO;
+        return;
+    }
+
+    self.prepareRibbonArgsPipeline = [self.device newComputePipelineStateWithFunction:prepareArgsFunc error:&error];
+    if (!self.prepareRibbonArgsPipeline) {
+        self.supportsRibbonRendering = NO;
+        return;
+    }
+
+    self.buildRibbonPipeline = [self.device newComputePipelineStateWithFunction:ribbonFunc error:&error];
+    if (!self.buildRibbonPipeline) {
+        self.supportsRibbonRendering = NO;
+        return;
+    }
+
+    self.supportsRibbonRendering = YES;
+}
+
+- (BOOL)encodeParticlesIndirectRibbon:(id<MTLBuffer>)particleBuffer
+                             capacity:(NSUInteger)capacity
+                            blendMode:(SSKParticleBlendMode)blendMode
+                         viewportSize:(CGSize)viewportSize
+                        commandBuffer:(id<MTLCommandBuffer>)commandBuffer
+                         renderTarget:(id<MTLTexture>)renderTarget
+                           loadAction:(MTLLoadAction)loadAction
+                           clearColor:(MTLClearColor)clearColor {
+    if (!self.supportsRibbonRendering || !commandBuffer || !renderTarget || !particleBuffer) {
+        return NO;
+    }
+
+    // Ensure alive indices buffer has capacity
+    NSUInteger indexBufferSize = capacity * sizeof(uint32_t);
+    if (!self.aliveIndicesBuffer || self.aliveIndicesBuffer.length < indexBufferSize) {
+        self.aliveIndicesBuffer = [self.device newBufferWithLength:indexBufferSize
+                                                           options:MTLResourceStorageModeShared];
+    }
+    if (!self.aliveCounterBuffer) {
+        uint32_t zero = 0;
+        self.aliveCounterBuffer = [self.device newBufferWithBytes:&zero
+                                                           length:sizeof(uint32_t)
+                                                          options:MTLResourceStorageModeShared];
+    }
+    if (!self.aliveIndicesBuffer || !self.aliveCounterBuffer) { return NO; }
+
+    // Ensure instance buffer (use capacity as upper bound for ribbon segments)
+    [self ensureInstanceCapacity:capacity];
+    if (!self.instanceBuffer) { return NO; }
+
+    // Reset alive counter
+    uint32_t zero = 0;
+    memcpy(self.aliveCounterBuffer.contents, &zero, sizeof(uint32_t));
+
+    NSUInteger tgs = 256;
+    NSUInteger threadGroups = (capacity + tgs - 1) / tgs;
+
+    // Pass 1: Compact alive particle indices (atomic counter populated on GPU)
+    {
+        id<MTLComputeCommandEncoder> enc = [commandBuffer computeCommandEncoder];
+        if (!enc) { return NO; }
+        [enc setComputePipelineState:self.compactAlivePipeline];
+        [enc setBuffer:particleBuffer offset:0 atIndex:0];
+        [enc setBuffer:self.aliveIndicesBuffer offset:0 atIndex:1];
+        [enc setBuffer:self.aliveCounterBuffer offset:0 atIndex:2];
+        uint32_t cap = (uint32_t)capacity;
+        [enc setBytes:&cap length:sizeof(uint32_t) atIndex:3];
+        [enc dispatchThreadgroups:MTLSizeMake(threadGroups, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(tgs, 1, 1)];
+        [enc endEncoding];
+    }
+
+    // Pass 2a: Prepare indirect draw args (reads alive counter, writes instanceCount = aliveCount - 1)
+    {
+        id<MTLComputeCommandEncoder> enc = [commandBuffer computeCommandEncoder];
+        if (!enc) { return NO; }
+        [enc setComputePipelineState:self.prepareRibbonArgsPipeline];
+        [enc setBuffer:self.aliveCounterBuffer offset:0 atIndex:0];
+        [enc setBuffer:self.indirectArgsBuffer offset:0 atIndex:1];
+        [enc dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        [enc endEncoding];
+    }
+
+    // Pass 2b: Build ribbon instance data (dispatch with capacity, kernel reads aliveCount from buffer)
+    {
+        id<MTLComputeCommandEncoder> enc = [commandBuffer computeCommandEncoder];
+        if (!enc) { return NO; }
+        [enc setComputePipelineState:self.buildRibbonPipeline];
+        [enc setBuffer:particleBuffer offset:0 atIndex:0];
+        [enc setBuffer:self.instanceBuffer offset:0 atIndex:1];
+        [enc setBuffer:self.aliveIndicesBuffer offset:0 atIndex:2];
+        [enc setBuffer:self.aliveCounterBuffer offset:0 atIndex:3];
+        [enc dispatchThreadgroups:MTLSizeMake(threadGroups, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(tgs, 1, 1)];
+        [enc endEncoding];
+    }
+
+    // Render using indirect draw (instanceCount set by GPU in pass 2a)
+    MTLRenderPassDescriptor *descriptor = [MTLRenderPassDescriptor renderPassDescriptor];
+    descriptor.colorAttachments[0].texture = renderTarget;
+    descriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
+    descriptor.colorAttachments[0].clearColor = clearColor;
+    descriptor.colorAttachments[0].loadAction = loadAction;
+
+    id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:descriptor];
+    if (!encoder) { return NO; }
+
+    id<MTLRenderPipelineState> pipeline = (blendMode == SSKParticleBlendModeAdditive) ? self.additivePipeline : self.alphaPipeline;
+    if (!pipeline) { [encoder endEncoding]; return NO; }
+
+    MTLViewport viewport = {0.0, 0.0, (double)renderTarget.width, (double)renderTarget.height, 0.0, 1.0};
+    [encoder setViewport:viewport];
+    [encoder setRenderPipelineState:pipeline];
+    [encoder setVertexBuffer:self.quadVertexBuffer offset:0 atIndex:0];
+    [encoder setVertexBuffer:self.instanceBuffer offset:0 atIndex:1];
+    vector_float2 viewportPoints = {(float)viewportSize.width, (float)viewportSize.height};
+    [encoder setVertexBytes:&viewportPoints length:sizeof(vector_float2) atIndex:2];
+    [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip
+             indirectBuffer:self.indirectArgsBuffer
+       indirectBufferOffset:0];
+    [encoder endEncoding];
+
+    return YES;
 }
 
 @end

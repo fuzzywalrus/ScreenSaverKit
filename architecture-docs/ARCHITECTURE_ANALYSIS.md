@@ -20,14 +20,16 @@ ScreenSaverKit uses a **FX Pass-based architecture** for composing effects. Each
   - Routes draw calls to appropriate passes
   - Manages texture cache for intermediate renders
 
-**Key Properties**:
+**Key Properties** (internal; public API exposes `particlePass`, `spritePass`, `textureCache`, `device`, `currentCommandBuffer`, `drawableSize`):
 ```objc
 @property (nonatomic, strong, readwrite) id<MTLDevice> device;
 @property (nonatomic, strong) id<MTLCommandQueue> commandQueue;
 @property (nonatomic, strong, readwrite, nullable) id<MTLCommandBuffer> currentCommandBuffer;
 @property (nonatomic, strong) SSKMetalParticlePass *particlePass;
+@property (nonatomic, strong, nullable) SSKMetalSpritePass *spritePass;
 @property (nonatomic, strong, nullable) SSKMetalBlurPass *blurPass;
 @property (nonatomic, strong, nullable) SSKMetalBloomPass *bloomPass;
+@property (nonatomic, strong, nullable) SSKMetalTrailPass *trailPass;
 @property (nonatomic, strong) SSKMetalTextureCache *textureCache;
 @property (nonatomic) BOOL needsClearOnNextPass;
 ```
@@ -59,14 +61,19 @@ ScreenSaverKit uses a **FX Pass-based architecture** for composing effects. Each
     - `SSKParticleBlendModeAdditive` (additive blending for bloom/energy)
   - Dynamic instance buffer allocation
   - Softness/feathering support via fragment shader
+  - **GPU-accelerated indirect rendering** — builds instance buffer on GPU for large particle counts
+  - **Per-particle rotation** — rotates quads by particle rotation angle in vertex shader
+  - **Ribbon mode** — connects sequential particles into ribbon strips via fully GPU-driven pipeline
 
 **Implementation Pattern**:
 - Maintains separate render pipelines for alpha and additive blend modes
 - Pre-allocates quad vertex buffer once
 - Dynamically grows instance buffer as needed
 - Encodes particle vertex/fragment shaders from Metal library
+- **Indirect rendering pipeline**: `compactAliveIndices` → `buildInstanceData` → indirect draw (single command buffer, no CPU readback)
+- **Ribbon rendering pipeline**: `compactAliveIndices` → `prepareRibbonIndirectArgs` → `buildRibbonInstanceData` → indirect draw
 
-**Data Structure** (SSKMetalInstanceData):
+**Data Structure** (SSKMetalInstanceData — 56 bytes):
 ```objc
 typedef struct {
     vector_float2 position;      // Particle world position
@@ -75,9 +82,27 @@ typedef struct {
     float length;                // Trail length
     vector_float4 color;         // RGBA color
     float softness;              // Edge softness parameter
-    float padding[3];            // Alignment
+    float rotation;              // Per-particle rotation in radians
+    float padding[2];            // Alignment
 } SSKMetalInstanceData;
 ```
+
+#### **SSKMetalTrailPass**
+- **Location**: `../ScreenSaverKit/SSKMetalTrailPass.h/m`
+- **Purpose**: Persistent offscreen texture for trail/persistence effects
+- **Key Features**:
+  - Owns a persistent trail texture (NOT in texture cache — survives trimming)
+  - Each frame: fade previous contents via `trailFadeKernel` compute shader, then new particles render on top
+  - Final result blitted to the drawable
+  - Texture created lazily on first use, recreated on size change
+- **Interface**:
+  - `trailTextureForSize:` — returns or creates the persistent trail texture
+  - `fadeWithRate:commandBuffer:` — multiplies all pixels by `(1.0 - fadeRate)`
+  - `blitTo:destination:commandBuffer:` — copies trail texture onto destination
+- **Integration with SSKMetalRenderer**:
+  - Enabled via `renderer.trailPersistenceEnabled = YES`
+  - Configured via `renderer.trailFadeRate` (0.0-1.0, default 0.05)
+  - When enabled, particle draws are redirected to the trail texture, faded, then composited to drawable
 
 #### **SSKMetalBlurPass**
 - **Location**: `../ScreenSaverKit/SSKMetalBlurPass.h/m`
@@ -120,31 +145,83 @@ typedef struct {
 - Owns threshold and composite compute pipelines
 - Manages its own intermediate textures (bright, blurred)
 
-### 3. Metal Shader Library
+### 3. Metal Shader Libraries
 
+#### **SSKParticleShaders.metal** (Rendering + Spawning + Effects)
 **Location**: `../ScreenSaverKit/Shaders/SSKParticleShaders.metal`
-
-**Compiled to**: `SSKParticleShaders.metallib` (in bundle)
+**Compiled to**: `SSKParticleShaders.metallib`
 
 **Shader Functions**:
 
 1. **Particle Rendering**:
-   - `particleVertex`: Transforms quad vertices to world space with orientation
+   - `particleVertex`: Transforms quad vertices to world space with orientation and per-particle rotation
    - `particleFragment`: Soft-edged disc with alpha falloff
-   
-2. **Blur Kernels**:
+
+2. **GPU Instance Building** (Indirect Rendering):
+   - `compactAliveIndices`: Atomically compacts alive particle indices into contiguous buffer
+   - `buildInstanceData`: Builds per-instance rendering data from particle state on GPU
+   - `prepareRibbonIndirectArgs`: Prepares indirect draw arguments for ribbon mode
+   - `buildRibbonInstanceData`: Builds ribbon segments connecting adjacent particles
+
+3. **Particle Initialization**:
+   - `initializeParticles`: GPU-accelerated batch particle spawning with z-depth support
+
+4. **Blur Kernels**:
    - `gaussianBlurHorizontal`: Horizontal Gaussian convolution
    - `gaussianBlurVertical`: Vertical Gaussian convolution
-   
-3. **Bloom Kernels**:
+
+5. **Bloom Kernels**:
    - `bloomThresholdKernel`: Brightness extraction
    - `bloomCompositeKernel`: Additive blend of bloom back to target
 
+6. **Trail Persistence**:
+   - `trailFadeKernel`: Multiplies all pixels by `(1.0 - fadeRate)` for trail fading
+
+#### **SSKSimulationShaders.metal** (GPU Simulation)
+**Location**: `../ScreenSaverKit/Shaders/SSKSimulationShaders.metal`
+**Compiled to**: `SSKSimulationShaders.metallib`
+
+**Shader Functions**:
+
+1. **Particle Simulation Kernel**:
+   - `simulateParticles`: Main simulation step — integrates velocity, applies gravity, damping, and feature-flagged forces
+
+2. **Curl Noise** (when `kFeatureCurlNoise` flag set):
+   - 2D simplex noise (Ashima Arts algorithm) sampled at each particle position
+   - Gradient rotated 90° for divergence-free (curl) force field
+   - Parameters: `noiseScale`, `noiseStrength`, `noiseSpeed`, `noiseTime`
+
+3. **Attractor Forces** (when `kFeatureAttractors` flag set):
+   - Up to 4 point attractors with inverse-square falloff
+   - `force = normalize(toAttractor) * (strength / dist²) * dt`
+
+4. **Color Gradient** (when `kFeatureColorGradient` flag set):
+   - Interpolates particle color from `baseColor` to `endColor` over lifetime
+   - End color packed as half-float into particle state (4 channels in 2 floats)
+
+**Simulation Uniforms** (`SSKSimulationUniforms` — 256 bytes):
+```c
+typedef struct {
+    vector_float2 gravity;           // Global gravity
+    float dt;                        // Delta time
+    float globalDamping;             // Per-second damping
+    uint32_t particleCount;          // Active count
+    uint32_t featureFlags;           // Bitmask: curlNoise|attractors|colorGradient|velocityHue
+    float noiseScale, noiseStrength, noiseSpeed, noiseTime;
+    vector_float2 attractors[4];     // Attractor positions
+    float attractorStrengths[4];     // Per-attractor strength
+    uint32_t attractorCount;         // Active count (0-4)
+    float globalTime;                // Total elapsed time
+    // ...padding to 256 bytes
+} SSKSimulationUniforms;
+```
+
 **Compilation Flow**:
-1. Metal source (.metal) compiled to library (.metallib)
-2. Bundled as app resource
-3. Loaded at runtime by SSKMetalRenderer
+1. Metal source (.metal) files compiled to libraries (.metallib) via `xcrun metal`
+2. Bundled as saver resources
+3. Loaded at runtime by SSKMetalRenderer (rendering) and SSKParticleSystem (simulation)
 4. Functions extracted by name and compiled into pipeline states
+5. SSKParticleSystem falls back to runtime string compilation if simulation metallib is missing
 
 ---
 
@@ -156,23 +233,28 @@ typedef struct {
 beginFrame()
   ├─ Create command buffer
   └─ Fetch next drawable
-  
-drawParticles()
-  ├─ Encode particle render pass
+
+drawParticles() / drawParticlesIndirect()
+  ├─ [if trail enabled] Fade trail texture via compute kernel
+  ├─ [if trail enabled] Redirect rendering to trail texture
+  ├─ Encode particle render pass (CPU or GPU indirect)
+  │   ├─ [if indirect] compactAliveIndices → buildInstanceData → indirect draw
+  │   └─ [if ribbon] compactAliveIndices → prepareRibbonArgs → buildRibbonData → indirect draw
   ├─ Set blend mode (alpha or additive)
+  ├─ [if trail enabled] Blit trail texture to drawable
   └─ Mark "clear not needed"
-  
+
 applyBlur() [optional]
   ├─ Create compute encoder
   ├─ Encode horizontal blur (source → scratch)
   └─ Encode vertical blur (scratch → destination)
-  
+
 applyBloom() [optional]
   ├─ Allocate intermediate textures
   ├─ Encode threshold pass (extract bright pixels)
   ├─ Encode blur pass on bright pixels
   └─ Encode composite pass (blend back in)
-  
+
 endFrame()
   ├─ Present drawable
   └─ Commit command buffer
@@ -232,9 +314,12 @@ The architecture uses **in-place rendering** with render target swapping:
 
 ### SSKParticleSystem
 - **Location**: `../ScreenSaverKit/SSKParticleSystem.h/m`
+- **Dual Simulation Path**:
+  - **CPU Path**: Objective-C integration with gravity, damping, curl noise, attractors, color gradient
+  - **GPU Path**: Metal compute kernel (`SSKSimulationShaders.metal`) with feature-flagged forces
 - **Dual Rendering Path**:
   - **CPU Path**: CoreGraphics rendering to CGContext
-  - **GPU Path**: Metal compute shader for simulation + render pass for drawing
+  - **GPU Path**: Metal render pass for instanced drawing (direct or indirect)
 
 **Key Properties**:
 ```objc
@@ -248,15 +333,43 @@ The architecture uses **in-place rendering** with render target swapping:
 @property (nonatomic) BOOL synchronizesMetalSimulation;   // Control GPU sync
 @property (nonatomic) BOOL synchronizesMetalSpawn;         // Control GPU spawn sync
 @property (nonatomic, readonly) NSUInteger aliveParticleCount;
+@property (nonatomic) BOOL ribbonModeEnabled;              // Connected ribbon strips
+// Curl noise properties
+@property (nonatomic) CGFloat noiseScale;                  // Default 0.003
+@property (nonatomic) CGFloat noiseStrength;               // Default 0.0 (opt-in)
+@property (nonatomic) CGFloat noiseSpeed;                  // Default 0.5
 ```
+
+**Behavior Options** (bitmask on each particle):
+```objc
+SSKParticleBehaviorOptionFadeAlpha      = 1 << 0,  // Fade alpha over lifetime
+SSKParticleBehaviorOptionFadeSize       = 1 << 1,  // Interpolate size over lifetime
+SSKParticleBehaviorOptionColorGradient  = 1 << 2,  // Interpolate baseColor → endColor
+SSKParticleBehaviorOptionCurlNoise      = 1 << 3,  // Apply curl noise force field
+SSKParticleBehaviorOptionAttractors     = 1 << 4,  // Apply attractor point forces
+SSKParticleBehaviorOptionVelocityHue    = 1 << 5,  // Map velocity to hue
+SSKParticleBehaviorOptionRibbonMode     = 1 << 6,  // Connected ribbon strips
+```
+
+**Attractor Points** (up to 4):
+```objc
+- (void)setAttractorAtIndex:(NSUInteger)index position:(NSPoint)position strength:(CGFloat)strength;
+- (void)clearAttractors;
+@property (nonatomic, readonly) NSUInteger attractorCount;
+```
+
+**Particle State** (`SSKParticleState` — 128 bytes):
+- Core fields: position, velocity, life, maxLife, size, baseSize, rotation, rotationVelocity
+- Color fields: baseColor (4 floats), endColor (packed as 2 half-float pairs)
+- Behavior: behaviorOptions bitmask, sizeOverLifeRange, damping
+- User data: userVector, userScalar
 
 **GPU-Accelerated Particle Spawning**:
 - `spawnParticlesGPU:parameters:` - Hardware-accelerated batch particle initialization
 - Uses Metal compute shader (`initializeParticles` kernel) for parallel initialization
 - Supports parameterized spawning with `SSKParticleSpawnParameters` struct
 - **Z-Depth Support**: GPU spawn can calculate z-depth values for perspective effects
-  - Z-depth affects velocity (far drops move slower), length (far drops are shorter), and color (far drops are darker)
-  - All z-depth calculations performed in parallel on GPU
+- **End Color Support**: `endColorMin`/`endColorMax` in spawn parameters for color gradient
 - Thread group sizing optimized for GPU architecture (threadExecutionWidth × 8)
 - Asynchronous spawn option via `synchronizesMetalSpawn` property
 - Fallback kernel compilation if shader missing from library
@@ -502,7 +615,7 @@ kPrefBloomThreshold: @(0.65)
 
 ### Strengths ✓
 - **Clean separation**: Each pass is independent and reusable
-- **Shader library abstraction**: Single Metal library for all kernels
+- **Shader library abstraction**: Separate Metal libraries for rendering and simulation
 - **Efficient texture pooling**: Avoids per-frame allocation overhead
 - **Async GPU work**: Particle simulation doesn't block CPU
 - **Dual rendering paths**: CPU and Metal options for particles
@@ -511,6 +624,13 @@ kPrefBloomThreshold: @(0.65)
 - **Z-depth support**: Perspective effects calculated entirely on GPU
 - **Optimized thread groups**: Dynamic sizing based on GPU architecture
 - **Thread-safe index management**: Serial queue for free-list updates
+- **Curl noise force field**: Divergence-free 2D noise for organic, swirling motion
+- **Attractor points**: Up to 4 configurable point attractors with inverse-square falloff
+- **Trail persistence**: Persistent offscreen texture for long luminous trails
+- **Color gradient**: Half-float packed endColor for smooth lifetime color transitions
+- **Per-particle rotation**: Rotation velocity integrated on GPU, applied in vertex shader
+- **Ribbon mode**: Fully GPU-driven connected strip rendering (no CPU readback)
+- **Indirect rendering**: GPU-side instance buffer building for large particle counts
 
 ### Weaknesses ✗
 - **Bloom-Blur coupling**: **RESOLVED** – bloom now resolves the blur stage dynamically via the effect registry and falls back to its own blur implementation when necessary.
@@ -544,33 +664,45 @@ ScreenSaverKit includes a comprehensive test suite using XCTest framework, locat
 
 ### Test Components
 
-#### SSKParticleSystemTests
+#### SSKParticleSystemTests (51 tests)
 - **Location**: `../Tests/SSKParticleSystemTests.m`
 - **Coverage**:
   - Initialization and capacity management
   - Particle spawning (CPU and GPU paths)
   - Particle lifecycle (spawn, update, expiration)
   - Index management and free-list reuse
-  - Behavior options (fade alpha, fade size)
-  - Metal simulation vs CPU simulation
-  - **GPU spawn with z-depth**: Tests z-depth parameter encoding and userScalar storage
-  - **GPU spawn without z-depth**: Verifies length multiplier sentinel encoding
+  - Behavior options (fade alpha, fade size, color gradient, combined bitmasks)
+  - Metal simulation vs CPU simulation parity
+  - **Color gradient**: CPU behavior, CPU/GPU parity, GPU spawn with endColor parameters
+  - **Curl noise**: Property defaults, configuration, zero-strength edge case, deflection verification
+  - **Attractor points**: Single/multiple attractors, max count, strength comparison, clear
+  - **Combined forces**: Curl noise + attractors simultaneously
+  - **Per-particle rotation**: Rotation velocity integration, rotation value preservation
+  - **Ribbon mode**: Property toggle
+  - **GPU spawn with z-depth**: Z-depth parameter encoding and userScalar storage
+  - **GPU spawn without z-depth**: Length multiplier sentinel encoding
 - **Metal-Specific Tests**: Automatically skip when Metal unavailable
 
-#### SSKMetalRendererTests
+#### SSKMetalRendererTests (8 tests)
 - **Location**: `../Tests/SSKMetalRendererTests.m`
 - **Coverage**:
   - Device creation and initialization
   - Texture cache functionality
   - Frame lifecycle (begin/end)
+  - Effect stage register/unregister
+  - **Trail persistence**: Default property values, configuration readback
+  - **Indirect rendering**: Property toggle
   - Graceful fallback when Metal unavailable
 
-#### SSKMetalPassTests
+#### SSKMetalPassTests (12 tests)
 - **Location**: `../Tests/SSKMetalPassTests.m`
 - **Coverage**:
-  - Pass initialization and setup
-  - Device and library requirements
-  - Base pass interface compliance
+  - Particle pass: setup, encode, ribbon mode property, length multiplier property
+  - Blur pass: setup and encode
+  - Bloom pass: setup and encode
+  - **Trail pass**: Initialization, texture creation, texture reuse for same size,
+    texture recreation on size change, zero-size returns nil, fade kernel encodes,
+    blit encodes
 
 #### SSKVectorMathTests
 - **Location**: `../Tests/SSKVectorMathTests.m`
@@ -585,6 +717,12 @@ ScreenSaverKit includes a comprehensive test suite using XCTest framework, locat
 - **Coverage**:
   - Palette creation and factory methods
   - Empty and single-color palettes
+
+#### SSKSpriteTests
+- **Location**: `../Tests/SSKSpriteTests.m`
+- **Coverage**:
+  - Sprite encoding and viewportPixels
+  - SSKMetalSpritePass integration (when Metal available)
 
 ### Test Infrastructure
 
@@ -622,11 +760,13 @@ make test
 
 | Component | Unit Tests | Integration Tests | Metal Tests | Notes |
 |-----------|------------|-------------------|-------------|-------|
-| SSKParticleSystem | ✓ | ✓ | ✓ | Comprehensive coverage including GPU spawn |
-| SSKMetalRenderer | ✓ | - | ✓ | Tests Metal availability fallback |
-| SSKMetalPass | ✓ | - | ✓ | Base class interface tests |
-| SSKVectorMath | ✓ | - | - | Pure math, no Metal dependency |
-| SSKColorPalette | ✓ | - | - | No Metal dependency |
+| SSKParticleSystem | ✓ (51) | ✓ | ✓ | Curl noise, attractors, color gradient, rotation, ribbon mode |
+| SSKMetalRenderer | ✓ (8) | - | ✓ | Trail persistence, indirect rendering, effect stages |
+| SSKMetalPass | ✓ (12) | - | ✓ | Particle, blur, bloom, trail pass encode tests |
+| SSKMetalTrailPass | ✓ | - | ✓ | Texture lifecycle, fade kernel, blit |
+| SSKVectorMath | ✓ (18) | - | - | Pure math, no Metal dependency |
+| SSKColorPalette | ✓ (4) | - | - | No Metal dependency |
+| SSKSprite | ✓ (52) | - | ✓ | Sprite rendering, animation, z-sorting |
 
 ### Testing Patterns
 
@@ -668,6 +808,14 @@ When adding new features:
 4. Ensure tests pass on both architectures (arm64, x86_64)
 
 **Recent Test Additions**:
+- Color gradient behavior tests (CPU, CPU/GPU parity, GPU spawn with endColor)
+- Curl noise tests (defaults, configuration, zero-strength, deflection)
+- Attractor tests (single, multiple, max count, strength comparison, clear, combined with noise)
+- Per-particle rotation tests (velocity integration, value preservation)
+- Ribbon mode property test
+- Behavior option bitmask combination test
+- Trail pass tests (init, texture lifecycle, fade encode, blit encode)
+- Trail persistence property tests on renderer
+- Indirect rendering property test
 - Z-depth GPU spawn tests (verify userScalar encoding)
 - Length multiplier sentinel tests
-- Metal spawn parameter validation tests

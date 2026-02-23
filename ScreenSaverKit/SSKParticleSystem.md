@@ -36,9 +36,13 @@ Inside your saver’s frame loop, call `advanceBy:` and either `drawInContext:` 
 | --- | --- |
 | `blendMode` | Switch between alpha compositing and additive bloom rendering. |
 | `gravity` | Global acceleration applied every update (`NSPoint` in points/sec²). |
-| `globalDamping` | Per-second damping factor applied on top of each particle’s `damping`. Useful for quick global tuning. |
+| `globalDamping` | Per-second damping factor applied on top of each particle's `damping`. Useful for quick global tuning. |
 | `metalSimulationEnabled` | Toggles the compute path. Defaults to `YES` when a device and pipeline could be created. Automatically falls back to `NO` if you install an `updateHandler`. |
 | `renderHandler` | Custom Core Graphics renderer executed for each particle when you are drawing on the CPU. Leave `nil` to use the default blurred disc. |
+| `noiseScale` | Spatial frequency for curl noise (default 0.003). Smaller = larger swirls. |
+| `noiseStrength` | Force magnitude for curl noise (default 0.0 — opt-in). Set > 0 to enable. |
+| `noiseSpeed` | Animation speed for curl noise (default 0.5). |
+| `ribbonModeEnabled` | When `YES`, particles render as connected trail strips instead of isolated quads. |
 
 ### Per-particle Fields
 
@@ -49,15 +53,58 @@ Every `SSKParticle` exposes direct setters/getters backed by the shared struct:
 - `size` / `baseSize` – diameter in points. `baseSize` is used by the fade helpers so you can scale relative to the original value.
 - `sizeVelocity` – points-per-second. Handy for “expanding spark” effects even on the GPU path.
 - `sizeOverLifeRange` – scalar range applied when `SSKParticleBehaviorOptionFadeSize` is set (e.g. `1.0 → 0.2`).
-- `behaviorOptions` – bitmask that enables the built-in fade behaviours.
+- `behaviorOptions` – bitmask that enables the built-in behaviours (see table below).
+- `endColor` – target colour for lifetime gradient. Set via spawn parameters `endColorMin`/`endColorMax`. Stored as half-float packed in the shared struct.
+- `rotation`, `rotationVelocity` – radians and radians/sec. Rotation is integrated on the GPU and applied in the vertex shader to orient the quad.
 - `userVector`, `userScalar` – scratch space for your renderer or palette logic.
 - `color` – stored as linear/extended sRGB in the shared buffer; the fade behaviour automatically mixes alpha when enabled.
 
 > **Note:** Configure these fields while you are inside the `spawnParticles:initializer:` block. The system syncs the underlying Metal buffer immediately after the block returns so the compute kernel sees the latest values.
 
+## Behaviour Options
+
+All behaviours are opt-in via a bitmask on `behaviorOptions`. They work on both the CPU and GPU simulation paths.
+
+| Flag | Value | Effect |
+| --- | --- | --- |
+| `FadeAlpha` | `1 << 0` | Linearly fade alpha from 1 → 0 over lifetime. |
+| `FadeSize` | `1 << 1` | Scale size from `sizeOverLifeRange.start` → `.end` over lifetime. |
+| `ColorGradient` | `1 << 2` | Interpolate `color` → `endColor` over lifetime (half-float packed). |
+| `CurlNoise` | `1 << 3` | Apply a divergence-free curl noise force field each frame. |
+| `Attractors` | `1 << 4` | Apply up to 4 point attractor forces with inverse-square falloff. |
+| `VelocityHue` | `1 << 5` | Map velocity magnitude to HSV hue (dynamic colour). |
+| `RibbonMode` | `1 << 6` | Render as connected trail strips (GPU-driven pipeline). |
+
+Flags combine freely: `FadeAlpha | ColorGradient | CurlNoise` is a common combination for luminous flowing streams.
+
+## Force Fields
+
+### Curl Noise
+
+Curl noise produces divergence-free swirling motion (particles never converge to a point). Configure it with three properties on the system, then enable `SSKParticleBehaviorOptionCurlNoise` per particle.
+
+```objective-c
+system.noiseScale    = 0.002;   // spatial frequency (smaller = bigger swirls)
+system.noiseStrength = 300.0;   // force magnitude (0 = disabled)
+system.noiseSpeed    = 0.3;     // animation speed
+```
+
+### Attractor Points
+
+Up to 4 point attractors pull particles with inverse-square falloff. Useful for vortex patterns.
+
+```objective-c
+[system setAttractorAtIndex:0 position:NSMakePoint(cx, cy) strength:5000.0];
+[system setAttractorAtIndex:1 position:NSMakePoint(cx + 200, cy) strength:3000.0];
+// Remove all:
+[system clearAttractors];
+```
+
+Enable `SSKParticleBehaviorOptionAttractors` on the particles that should be affected.
+
 ## Behaviours vs. Custom Updates
 
-- Prefer `SSKParticleBehaviorOptionFadeAlpha` and `SSKParticleBehaviorOptionFadeSize` + `sizeOverLifeRange` for time-based falloff. This path works identically on CPU and GPU.
+- Prefer the built-in behaviour flags for effects like fading, colour gradients, and force fields. They run identically on CPU and GPU.
 - If you attach `updateHandler`, Metal simulation is disabled automatically. Use this when you truly need per-frame custom math in Objective-C (e.g. collision callbacks).
 
 ## When Things Go Wrong
@@ -66,11 +113,22 @@ Every `SSKParticle` exposes direct setters/getters backed by the shared struct:
 - **Particles never appear** – Double-check that `spawnParticles:` is called regularly and that `maxLife` is > 0. Also confirm you are setting `color` to something non-transparent inside the initializer block.
 - **Visual mismatch between Metal and CPU** – Keep custom logic inside the behaviour system or maintain equivalent code paths for CPU and GPU. If behaviour flags don’t cover your effect, consider setting a tiny `updateHandler` only when Metal is unavailable.
 
+## Trail Persistence
+
+Trail persistence lives on the renderer, not the particle system, but pairs naturally with it. When enabled, each frame's particles are composited onto a persistent offscreen texture that fades slowly over time.
+
+```objective-c
+renderer.trailPersistenceEnabled = YES;
+renderer.trailFadeRate = 0.02;  // 0.0 = no fade, 1.0 = instant fade
+```
+
 ## Integration Tips
 
 1. Reuse a single `SSKParticleSystem` instance; the capacity parameter is fixed for the lifetime of the object.
 2. When you rebuild or reset entire effects, call `reset` on the system—this clears internal bookkeeping and, in GPU mode, synchronises the contents back to the compute buffer.
 3. Pair the system with `SSKMetalParticleRenderer` for very cheap instanced rendering. If Metal is unavailable the CPU `drawInContext:` path still works.
 4. Want palette-driven colours? Store your palette index/progress in `userScalar` or `userVector` and resolve the actual `NSColor` when you spawn new particles.
+5. For flowing energy streams, combine curl noise + trail persistence + additive blending + bloom. See `Demos/Flux/FluxView.m`.
+6. For connected trail strips (ribbon mode), enable `ribbonModeEnabled` on the system and set `SSKParticleBehaviorOptionRibbonMode` on particles. See `Demos/RibbonFlow/RibbonFlowView.m`.
 
-That should give both humans and tooling (including LLMs) enough context to use the particle system effectively. Refer to `Demos/RibbonFlow` and `Demos/DVDlogo` in the repository for concrete usage patterns.
+That should give both humans and tooling (including LLMs) enough context to use the particle system effectively. Refer to `Demos/Flux`, `Demos/RibbonFlow`, and `Demos/DVDLogoMetal` in the repository for concrete usage patterns.
